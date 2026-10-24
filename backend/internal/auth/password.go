@@ -11,22 +11,29 @@ import (
 )
 
 const (
-	memory  = 64 * 1024
-	time    = 1
-	threads = 4
-	keyLen  = 32
+	argonMemory  = 64 * 1024
+	argonTime    = 1
+	argonThreads = 4
+	argonKeyLen  = 32
 )
 
 var b64 = base64.RawStdEncoding
+
+// DummyHash: kullanıcı bulunamadığında da parola doğrulaması yapıp
+// yanıt süresinden kullanıcı varlığının anlaşılmasını zorlaştırır.
+var DummyHash = func() string {
+	h, _ := HashPassword("dummy-password")
+	return h
+}()
 
 func HashPassword(pw string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(pw), salt, time, memory, threads, keyLen)
+	key := argon2.IDKey([]byte(pw), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
-		memory, time, threads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
+		argonMemory, argonTime, argonThreads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
 }
 
 func VerifyPassword(pw, encoded string) bool {
@@ -39,6 +46,6 @@ func VerifyPassword(pw, encoded string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	got := argon2.IDKey([]byte(pw), salt, time, memory, threads, uint32(len(want)))
+	got := argon2.IDKey([]byte(pw), salt, argonTime, argonMemory, argonThreads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
