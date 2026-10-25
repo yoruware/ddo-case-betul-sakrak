@@ -33,7 +33,7 @@ POST {{base}}/api/nodes
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
-{"kind":"folder","name":"Hukuk"}
+{"kind":"folder","name":"Hukuk2"}
 
 ###
 @rootId = {{createRoot.response.body.$.id}}
@@ -139,3 +139,70 @@ Authorization: Bearer {{adminToken}}
 ### 21) Aynı sorgu → write: false (üyelik kalkınca anında)
 GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
 Authorization: Bearer {{adminToken}}
+
+### 22) Denetim kaydı listesi (admin)
+GET {{base}}/api/audit
+Authorization: Bearer {{adminToken}}
+
+### 23) Zincir doğrulama → "valid": true
+GET {{base}}/api/audit/verify
+Authorization: Bearer {{adminToken}}
+
+### 24) Çalışan denetim kaydına giremez → 403
+GET {{base}}/api/audit
+Authorization: Bearer {{calisanToken}}
+
+### 25) Dosya yükle
+# @name uploadDoc
+POST {{base}}/api/nodes/{{rootId}}/files
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
+
+------kd
+Content-Disposition: form-data; name="file"; filename="rapor.txt"
+Content-Type: text/plain
+
+Bu bir deneme raporudur.
+------kd--
+
+###
+@fileId = {{uploadDoc.response.body.$.node.id}}
+
+### 26) İndirme bağlantısı al
+# @name dl
+POST {{base}}/api/files/{{fileId}}/download-link
+Authorization: Bearer {{adminToken}}
+
+###
+@dlUrl = {{dl.response.body.$.url}}
+
+### 27) İndir (Authorization yok, imza yeterli)
+GET {{base}}{{dlUrl}}
+
+### 28) Zararlı imzalı dosya → 422, karantina
+POST {{base}}/api/nodes/{{rootId}}/files
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
+
+------kd
+Content-Disposition: form-data; name="file"; filename="sahte.txt"
+Content-Type: text/plain
+
+KASADOC-TEST-MALWARE
+------kd--
+
+### 29) Karantina listesi
+GET {{base}}/api/quarantine
+Authorization: Bearer {{adminToken}}
+
+### 30) Sahte uzantı (exe başlıklı .pdf yerine uzantısız) → 415
+POST {{base}}/api/nodes/{{rootId}}/files
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
+
+------kd
+Content-Disposition: form-data; name="file"; filename="betik.exe"
+Content-Type: application/octet-stream
+
+MZ
+------kd--
