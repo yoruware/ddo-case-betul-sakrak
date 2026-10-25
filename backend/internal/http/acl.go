@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/audit"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/permissions"
 )
 
@@ -57,8 +61,9 @@ func (d Deps) setACL(w http.ResponseWriter, r *http.Request) {
 	if !d.authorize(w, r, nodeID, permissions.Manage) {
 		return
 	}
+	ctx := r.Context()
 	var exists bool
-	if err := d.Pool.QueryRow(r.Context(), existsSQL, req.SubjectID).Scan(&exists); err != nil {
+	if err := d.Pool.QueryRow(ctx, existsSQL, req.SubjectID).Scan(&exists); err != nil {
 		internalError(w, "özne sorgusu başarısız", err)
 		return
 	}
@@ -66,19 +71,58 @@ func (d Deps) setACL(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "subject_not_found", "Kullanıcı veya grup bulunamadı")
 		return
 	}
+
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		internalError(w, "transaction başlatılamadı", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var oldEffect *string
+	err = tx.QueryRow(ctx, `
+SELECT effect FROM acl_entries
+WHERE node_id=$1::uuid AND subject_type=$2 AND subject_id=$3::uuid AND permission=$4 FOR UPDATE`,
+		nodeID, req.SubjectType, req.SubjectID, req.Permission).Scan(&oldEffect)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		internalError(w, "mevcut kayıt okunamadı", err)
+		return
+	}
+
 	var e aclResp
-	err := d.Pool.QueryRow(r.Context(), upsertACLSQL,
+	err = tx.QueryRow(ctx, upsertACLSQL,
 		nodeID, req.SubjectType, req.SubjectID, req.Permission, req.Effect, p.UserID).
 		Scan(&e.ID, &e.NodeID, &e.SubjectType, &e.SubjectID, &e.Permission, &e.Effect, &e.CreatedAt)
 	if err != nil {
 		internalError(w, "yetki kaydı yazılamadı", err)
 		return
 	}
+
+	var old any
+	if oldEffect != nil {
+		old = map[string]string{"effect": *oldEffect}
+	}
+	err = d.Audit.AppendTx(ctx, tx, audit.Entry{
+		ActorID: p.UserID, Action: "acl.set", TargetType: "node", TargetID: nodeID,
+		Old: old,
+		New: map[string]string{
+			"subject_type": req.SubjectType, "subject_id": req.SubjectID,
+			"permission": req.Permission, "effect": req.Effect,
+		},
+	})
+	if err != nil {
+		internalError(w, "denetim kaydı yazılamadı", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		internalError(w, "commit başarısız", err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, e)
 }
 
-// DELETE /api/nodes/{id}/acl/{entryId}: kaydı kaldırır (manage gerekir).
 func (d Deps) revokeACL(w http.ResponseWriter, r *http.Request) {
+	p, _ := PrincipalFrom(r.Context())
 	nodeID, entryID := r.PathValue("id"), r.PathValue("entryId")
 	if !isUUID(nodeID) || !isUUID(entryID) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "Geçersiz kimlik")
@@ -87,14 +131,37 @@ func (d Deps) revokeACL(w http.ResponseWriter, r *http.Request) {
 	if !d.authorize(w, r, nodeID, permissions.Manage) {
 		return
 	}
-	tag, err := d.Pool.Exec(r.Context(),
-		`DELETE FROM acl_entries WHERE id = $1::uuid AND node_id = $2::uuid`, entryID, nodeID)
+	ctx := r.Context()
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		internalError(w, "transaction başlatılamadı", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var subjType, subjID, perm, effect string
+	err = tx.QueryRow(ctx, `
+DELETE FROM acl_entries WHERE id = $1::uuid AND node_id = $2::uuid
+RETURNING subject_type, subject_id::text, permission, effect`, entryID, nodeID).
+		Scan(&subjType, &subjID, &perm, &effect)
+	if errors.Is(err, pgx.ErrNoRows) {
+		WriteError(w, http.StatusNotFound, "not_found", "Yetki kaydı bulunamadı")
+		return
+	}
 	if err != nil {
 		internalError(w, "yetki kaydı silinemedi", err)
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		WriteError(w, http.StatusNotFound, "not_found", "Yetki kaydı bulunamadı")
+	err = d.Audit.AppendTx(ctx, tx, audit.Entry{
+		ActorID: p.UserID, Action: "acl.revoke", TargetType: "node", TargetID: nodeID,
+		Old: map[string]string{"subject_type": subjType, "subject_id": subjID, "permission": perm, "effect": effect},
+	})
+	if err != nil {
+		internalError(w, "denetim kaydı yazılamadı", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		internalError(w, "commit başarısız", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
