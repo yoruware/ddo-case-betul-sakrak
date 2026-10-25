@@ -20,6 +20,7 @@ import (
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/download"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/permissions"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/upload"
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/retention"
 )
 
 const insertVersionSQL = `
@@ -157,7 +158,11 @@ func (d Deps) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
+	// Yükleme paylaşımlı, imha özel kilit alır: blob silinirken aynı içerik yeniden bağlanamaz.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, retention.LockKey); err != nil {
+		internalError(w, "kilit alınamadı", err)
+		return
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO blobs (sha256, size_bytes) VALUES ($1, $2) ON CONFLICT (sha256) DO NOTHING`, sha, n); err != nil {
 		internalError(w, "blob kaydı yazılamadı", err)
 		return

@@ -17,3 +17,13 @@ Execution Time 0.143 ms, 28 tampon isabeti.
 **Sınırlamalar:** Ağaç 10.000 bağımsız zincirden oluşuyor (dallanma yok). Ölçüm yalnızca yetki
 sorgusunu kapsıyor, HTTP katmanını değil. Dizüstü bilgisayarda Docker içinde ve ısınmış önbellekle
 yapıldı. Eşzamanlı çalıştırmada tek bir istek 33 ms'ye çıktı, p95'i etkilemedi.
+
+
+
+ “T-4 Bilinen Sınırlamalar”:
+
+İmha mantıksal ve dosya sistemi düzeyindedir. Yedekler, PostgreSQL WAL dosyaları ve disk artıkları kapsam dışıdır, kriptografik silme yoktur.
+Dosya adı, mezar taşında ve denetim kaydında kalır (kanıt amacıyla bilinçli seçim). Kişisel veri içeren adlar için ayrı bir politika gerekir.
+Saklama süresi, düğümün oluşturulma tarihinden başlar. Dosyaya sonradan eklenecek sürümler sayacı yeniden başlatmaz.
+Klasörler imha edilmez, yalnızca dosyalar.
+Zamanlanmış job tek bir uygulama örneği varsayar (çok örnekli çalışmada da güvenli ama iş tekrarlanır).

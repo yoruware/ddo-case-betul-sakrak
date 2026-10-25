@@ -261,3 +261,108 @@ Authorization: Bearer {{adminToken}}
 
 ### 40) İptalden sonra → 410
 GET {{base}}/api/s/{{shareToken}}/download
+
+
+
+
+
+
+
+### 41) Arşiv sorumlusu girişi
+# @name loginArsiv
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"arsiv@kasadoc.local","password":"{{pw}}"}
+
+### 42) Hukuk girişi
+# @name loginHukuk
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"hukuk@kasadoc.local","password":"{{pw}}"}
+
+###
+@arsivToken = {{loginArsiv.response.body.$.access_token}}
+@hukukToken = {{loginHukuk.response.body.$.access_token}}
+
+### 43) Belge türleri
+GET {{base}}/api/document-types
+Authorization: Bearer {{arsivToken}}
+
+### 44) Hemen imhaya uygun demo türü (tekrarında 409 normal)
+POST {{base}}/api/document-types
+Authorization: Bearer {{arsivToken}}
+Content-Type: application/json
+
+{"code":"gecici0","name":"Geçici (demo)","retention_days":0}
+
+### 45) İmha demosu için dosya yükle (tekrarında adı değiştir)
+# @name uploadDemo
+POST {{base}}/api/nodes/{{rootId}}/files
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
+
+------kd
+Content-Disposition: form-data; name="file"; filename="imha-demo.txt"
+Content-Type: text/plain
+
+Bu dosya imha edilecek.
+------kd--
+
+###
+@demoFileId = {{uploadDemo.response.body.$.node.id}}
+
+### 46) Saklama kaydı ata → 200
+PUT {{base}}/api/files/{{demoFileId}}/retention
+Authorization: Bearer {{arsivToken}}
+Content-Type: application/json
+
+{"doc_type":"gecici0"}
+
+### 47) Hukuk, klasöre bekletme koyar → 201
+# @name holdA
+POST {{base}}/api/nodes/{{rootId}}/legal-holds
+Authorization: Bearer {{hukukToken}}
+Content-Type: application/json
+
+{"case_ref":"DAVA-2026-1","reason":"Devam eden dava"}
+
+###
+@holdId = {{holdA.response.body.$.id}}
+
+### 48) İmha job'ı → blocked_by_hold ≥ 1, dosya hâlâ duruyor
+POST {{base}}/api/retention/run
+Authorization: Bearer {{arsivToken}}
+
+### 49) Saklama durumu → legal_hold_active: true
+GET {{base}}/api/files/{{demoFileId}}/retention
+Authorization: Bearer {{arsivToken}}
+
+### 50) Bekletmeyi kaldır → 204
+POST {{base}}/api/legal-holds/{{holdId}}/release
+Authorization: Bearer {{hukukToken}}
+
+### 51) İmha job'ı → destroyed ≥ 1, certificates dolu
+# @name runDestroy
+POST {{base}}/api/retention/run
+Authorization: Bearer {{arsivToken}}
+
+###
+@certId = {{runDestroy.response.body.$.certificates[0]}}
+
+### 52) Tutanak ve doğrulama → verification.valid: true
+GET {{base}}/api/destruction-certificates/{{certId}}
+Authorization: Bearer {{arsivToken}}
+
+### 53) İmhadan sonra indirme bağlantısı → 404
+POST {{base}}/api/files/{{demoFileId}}/download-link
+Authorization: Bearer {{adminToken}}
+
+### 54) Tekrar çalıştır → destroyed 0 (idempotent)
+POST {{base}}/api/retention/run
+Authorization: Bearer {{arsivToken}}
+
+### 55) Zincir doğrulama → valid: true
+GET {{base}}/api/audit/verify
+Authorization: Bearer {{adminToken}}

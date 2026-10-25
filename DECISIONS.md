@@ -77,3 +77,25 @@ Bağlantı, oluşturanın dosyadaki `read` yetkisine bağlıdır.
 (testle kanıtlı). (−) Sınırlayıcı belleğtedir: yeniden başlatmada sıfırlanır, çok örnekli kurulumda paylaşılmaz.
 (−) Bağlantı başına sınır, saldırganın bağlantıyı 15 dakika kilitlemesine izin verir (hizmet aksatma ile
 güvenlik arasında bilinçli seçim). (−) Sayaç istek başlayınca artar; yarıda kesilen indirme hakkı tüketir.
+
+## ADR-005: Saklama, hukuki bekletme ve kanıtlanabilir imha
+
+**Bağlam.** Belgeler türüne göre belirli süre saklanıp imha edilmeli, hukuki bekletme imhayı kesin
+engellemeli, imha tekrar ve eşzamanlı çalıştırmada aynı sonucu vermeli ve her imha kanıtlanabilir
+olmalı. İçerik adresli saklamada aynı blob birden çok dosyaya bağlı olabilir.
+
+**Seçenekler.** Silme: (a) satırı fiziksel silmek, (b) mezar taşı (tombstone) bırakmak. Blob silme:
+(i) transaction içinde doğrudan silmek, (ii) commit sonrası silmek, (iii) önce çöp klasörüne taşıyıp
+commit sonrası silmek. Eşzamanlılık: (1) satır kilitleri, (2) tek advisory kilit.
+Bekletme kapsamı: (A) yalnızca işaretlenen düğüm, (B) alt ağaç (`ancestor_ids`).
+
+**Karar.** (b), (iii), (2), (B). İmha, belge başına tek transaction'dır. Kilit altında koşullar yeniden
+okunur, bekletme yeniden kontrol edilir, sürümler ve boşta kalan blob silinir, paylaşım bağlantıları
+kapatılır, tutanak hash'i denetim zincirine yazılır. Yükleme, bekletme ve imha aynı advisory kilidi kullanır
+(yükleme paylaşımlı, diğerleri özel). Bekletme klasöre konunca altındaki tüm dosyaları kapsar.
+
+**Sonuç.** (+) Aynı job tekrar veya eşzamanlı çalışsa her belge tam bir kez imha edilir (testle kanıtlı).
+(+) Commit başarısız olursa blob geri konur, veri kaybı olmaz. (+) Tutanağın hash'i değiştirilemez
+zincirde olduğu için sonradan düzeltilemez. (−) Mezar taşı adı saklar; aynı klasörde aynı ad
+yeniden kullanılamaz. (−) Global kilit, imha ve bekletme işlemlerini sıraya dizer; hacim büyürse
+düğüm başına kilide geçilmeli. (−) Saklama kaydı bir kez atanır; hatalı atama yalnızca veritabanından düzeltilir.

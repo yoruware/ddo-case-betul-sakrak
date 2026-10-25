@@ -19,6 +19,7 @@ import (
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/download"
 	httpapi "github.com/yoruware/ddo-case-betul-sakrak/backend/internal/http"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/permissions"
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/retention"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/storage"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/upload"
 )
@@ -90,13 +91,43 @@ func main() {
 		fatal("seed başarısız", err)
 	}
 
+	auditSvc := audit.New(pool)
+	retSvc := retention.New(pool, auditSvc, store)
+
+	// Zamanlanmış imha: RETENTION_INTERVAL=0 ile kapatılır.
+	if iv := env("RETENTION_INTERVAL", "1h"); iv != "0" {
+		every, err := time.ParseDuration(iv)
+		if err != nil || every < time.Second {
+			fatal("RETENTION_INTERVAL geçersiz", errors.New("en az 1s olmalı veya 0"))
+		}
+		go func() {
+			t := time.NewTicker(every)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					res, err := retSvc.Run(ctx, "system:retention", 500)
+					if err != nil {
+						slog.Error("zamanlanmış imha başarısız", "err", err)
+						continue
+					}
+					slog.Info("zamanlanmış imha tamamlandı", "checked", res.Checked,
+						"destroyed", res.Destroyed, "blocked_by_hold", res.BlockedByHold, "failed", res.Failed)
+				}
+			}
+		}()
+	}
+
 	handler := httpapi.NewRouter(httpapi.Deps{
 		Pool:       pool,
 		Tokens:     auth.NewTokenService(secret, accessTTL, refreshTTL),
 		Perms:      permissions.New(pool),
-		Audit:      audit.New(pool),
+		Audit:      auditSvc,
 		Store:      store,
 		Signer:     download.NewSigner(signKey, linkTTL),
+		Retention:  retSvc,
 		Limits:     limits,
 		CORSOrigin: env("CORS_ALLOWED_ORIGIN", "http://localhost:3000"),
 	})
@@ -105,7 +136,7 @@ func main() {
 		Addr:              ":" + env("APP_PORT", "8080"),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       2 * time.Minute, // yükleme gövdesini de kapsar
+		ReadTimeout:       2 * time.Minute,
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       60 * time.Second,
 	}

@@ -137,6 +137,7 @@ func listQuery(withParent bool) string {
 	return `SELECT n.id::text, n.parent_id::text, n.kind, n.name, n.owner_id::text, n.created_at
 FROM nodes n
 WHERE ` + cond + `
+  AND n.destroyed_at IS NULL
   AND ($2::uuid IS NULL OR n.id > $2::uuid)
   AND EXISTS (` + fmt.Sprintf(aclMatch, "'allow'") + `)
   AND NOT EXISTS (` + fmt.Sprintf(aclMatch, "'deny'") + `)

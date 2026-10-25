@@ -72,31 +72,38 @@ func computeHash(prev string, ts time.Time, actor, action, tt, tid, oldV, newV s
 
 // AppendTx: iş işlemiyle aynı transaction içinde yazılır; iş geri alınırsa kayıt da geri alınır.
 func (s *Service) AppendTx(ctx context.Context, tx pgx.Tx, e Entry) error {
+	_, _, err := s.AppendTxRef(ctx, tx, e)
+	return err
+}
+
+// AppendTxRef: kaydı ekler ve sıra numarası ile hash'ini döndürür (tutanaklar bunlara bağlanır).
+func (s *Service) AppendTxRef(ctx context.Context, tx pgx.Tx, e Entry) (int64, string, error) {
 	oldS, err := canon(e.Old)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	newS, err := canon(e.New)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
-		return err
+		return 0, "", err
 	}
 	prev := Genesis
 	err = tx.QueryRow(ctx, `SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1`).Scan(&prev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		prev = Genesis
 	} else if err != nil {
-		return err
+		return 0, "", err
 	}
 	ts := time.Now().UTC().Truncate(time.Microsecond)
 	h := computeHash(prev, ts, e.ActorID, e.Action, e.TargetType, e.TargetID, oldS, newS)
-	_, err = tx.Exec(ctx, `
+	var seq int64
+	err = tx.QueryRow(ctx, `
 INSERT INTO audit_log (ts, actor_id, action, target_type, target_id, old_value, new_value, prev_hash, hash)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		ts, e.ActorID, e.Action, e.TargetType, e.TargetID, oldS, newS, prev, h)
-	return err
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING seq`,
+		ts, e.ActorID, e.Action, e.TargetType, e.TargetID, oldS, newS, prev, h).Scan(&seq)
+	return seq, h, err
 }
 
 func (s *Service) Append(ctx context.Context, e Entry) error {

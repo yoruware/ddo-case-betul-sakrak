@@ -29,6 +29,7 @@ import (
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/storage"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/testutil"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/upload"
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/retention"
 )
 
 type env struct {
@@ -40,6 +41,7 @@ type env struct {
 	admin, emp string
 	adminID    string
 	empID      string
+	archivist, legal string
 }
 
 func newEnv(t *testing.T) *env {
@@ -59,6 +61,7 @@ func newEnv(t *testing.T) *env {
 	h := httpapi.NewRouter(httpapi.Deps{
 		Pool: pool, Tokens: tokens, Perms: permissions.New(pool), Audit: audit.New(pool),
 		Store: store, Signer: signer, Limits: lim, CORSOrigin: "http://localhost",
+		Retention: retention.New(pool, audit.New(pool), store),
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -80,6 +83,8 @@ func newEnv(t *testing.T) *env {
 	}
 	e.adminID, e.admin = mk("admin@test", "admin")
 	e.empID, e.emp = mk("emp@test", "employee")
+	_, e.archivist = mk("arsiv@test", "archivist")
+	_, e.legal = mk("hukuk@test", "legal")
 	return e
 }
 
