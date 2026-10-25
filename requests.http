@@ -33,7 +33,7 @@ POST {{base}}/api/nodes
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
-{"kind":"folder","name":"Hukuk2"}
+{"kind":"folder","name":"Hukuk3"}
 
 ###
 @rootId = {{createRoot.response.body.$.id}}
@@ -206,3 +206,58 @@ Content-Type: application/octet-stream
 
 MZ
 ------kd--
+
+### 31) Paylaşım bağlantısı oluştur (parolasız, 3 indirme, 1 saat)
+# @name shareA
+POST {{base}}/api/nodes/{{fileId}}/share-links
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"expires_in_seconds":3600,"max_downloads":3}
+
+###
+@shareId = {{shareA.response.body.$.id}}
+@shareToken = {{shareA.response.body.$.token}}
+
+### 32) Bağlantı bilgisi (kimlik gerekmez)
+GET {{base}}/api/s/{{shareToken}}
+
+### 33) Bağlantıdan indir (kimlik gerekmez)
+GET {{base}}/api/s/{{shareToken}}/download
+
+### 34) Parolalı bağlantı oluştur
+# @name shareB
+POST {{base}}/api/nodes/{{fileId}}/share-links
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"expires_in_seconds":3600,"password":"Sifre-12345"}
+
+###
+@tokenB = {{shareB.response.body.$.token}}
+
+### 35) Parolasız GET → 401 password_required
+GET {{base}}/api/s/{{tokenB}}/download
+
+### 36) Yanlış parola → 401
+POST {{base}}/api/s/{{tokenB}}/download
+Content-Type: application/json
+
+{"password":"yanlis"}
+
+### 37) Doğru parola → 200
+POST {{base}}/api/s/{{tokenB}}/download
+Content-Type: application/json
+
+{"password":"Sifre-12345"}
+
+### 38) Bağlantıları listele (token dönmez)
+GET {{base}}/api/nodes/{{fileId}}/share-links
+Authorization: Bearer {{adminToken}}
+
+### 39) İptal et → 204
+DELETE {{base}}/api/share-links/{{shareId}}
+Authorization: Bearer {{adminToken}}
+
+### 40) İptalden sonra → 410
+GET {{base}}/api/s/{{shareToken}}/download

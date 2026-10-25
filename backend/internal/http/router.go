@@ -21,10 +21,14 @@ type Deps struct {
 	Store      *storage.Store
 	Signer     *download.Signer
 	Limits     upload.Limits
+	Share      *ShareGuards // nil ise varsayılan sınırlarla oluşturulur
 	CORSOrigin string
 }
 
 func NewRouter(d Deps) http.Handler {
+	if d.Share == nil {
+		d.Share = NewShareGuards()
+	}
 	mux := http.NewServeMux()
 	authn := Authenticate(d.Tokens)
 	user := func(h http.HandlerFunc) http.Handler { return authn(h) }
@@ -48,6 +52,13 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("POST /api/files/{id}/download-link", user(d.downloadLink))
 	mux.HandleFunc("GET /api/download/{id}", d.downloadFile)
 	mux.Handle("GET /api/quarantine", auditorOnly(d.listQuarantine))
+
+	mux.Handle("POST /api/nodes/{id}/share-links", user(d.createShareLink))
+	mux.Handle("GET /api/nodes/{id}/share-links", user(d.listShareLinks))
+	mux.Handle("DELETE /api/share-links/{id}", user(d.revokeShareLink))
+	mux.HandleFunc("GET /api/s/{token}", d.shareInfo)
+	mux.HandleFunc("GET /api/s/{token}/download", d.shareDownload)
+	mux.HandleFunc("POST /api/s/{token}/download", d.shareDownload)
 
 	mux.Handle("POST /api/groups", admin(d.createGroup))
 	mux.Handle("POST /api/groups/{id}/members", admin(d.addMember))
