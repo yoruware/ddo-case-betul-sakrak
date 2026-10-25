@@ -15,6 +15,7 @@ import (
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/auth"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/db"
 	httpapi "github.com/yoruware/ddo-case-betul-sakrak/backend/internal/http"
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/permissions"
 )
 
 func env(key, def string) string {
@@ -68,6 +69,7 @@ func main() {
 	handler := httpapi.NewRouter(httpapi.Deps{
 		Pool:       pool,
 		Tokens:     auth.NewTokenService(secret, accessTTL, refreshTTL),
+		Perms:      permissions.New(pool),
 		CORSOrigin: env("CORS_ALLOWED_ORIGIN", "http://localhost:3000"),
 	})
 

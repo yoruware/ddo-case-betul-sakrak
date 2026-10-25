@@ -1,0 +1,141 @@
+@base = http://localhost:8080
+@pw = Demo1234!
+
+### 1) Admin girişi
+# @name loginAdmin
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"admin@kasadoc.local","password":"{{pw}}"}
+
+### 2) Çalışan girişi
+# @name loginCalisan
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"calisan@kasadoc.local","password":"{{pw}}"}
+
+###
+@adminToken = {{loginAdmin.response.body.$.access_token}}
+@calisanToken = {{loginCalisan.response.body.$.access_token}}
+
+### 3) Çalışanın kimliği
+# @name meCalisan
+GET {{base}}/api/me
+Authorization: Bearer {{calisanToken}}
+
+###
+@calisanId = {{meCalisan.response.body.$.id}}
+
+### 4) Admin kök klasör oluşturur
+# @name createRoot
+POST {{base}}/api/nodes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"kind":"folder","name":"Hukuk"}
+
+###
+@rootId = {{createRoot.response.body.$.id}}
+
+### 5) Admin alt klasör oluşturur
+# @name createSub
+POST {{base}}/api/nodes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"parent_id":"{{rootId}}","kind":"folder","name":"Sozlesmeler"}
+
+###
+@subId = {{createSub.response.body.$.id}}
+
+### 6) Çalışan kökleri listeler → items boş olmalı
+GET {{base}}/api/nodes
+Authorization: Bearer {{calisanToken}}
+
+### 7) Admin çalışana kökte read verir
+# @name grantRead
+POST {{base}}/api/nodes/{{rootId}}/acl
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"read","effect":"allow"}
+
+### 8) Çalışan kökü görür (200)
+GET {{base}}/api/nodes
+Authorization: Bearer {{calisanToken}}
+
+### 9) Çalışan alt klasörü miras ile görür
+GET {{base}}/api/nodes?parent_id={{rootId}}
+Authorization: Bearer {{calisanToken}}
+
+### 10) Alt klasörde etkin yetki → read: true, diğerleri false
+GET {{base}}/api/nodes/{{subId}}/effective-permissions
+Authorization: Bearer {{calisanToken}}
+
+### 11) Çalışan yetki vermeye çalışır → 403
+POST {{base}}/api/nodes/{{subId}}/acl
+Authorization: Bearer {{calisanToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"write","effect":"allow"}
+
+### 12) Admin alt klasörde çalışana read DENY koyar
+# @name denySub
+POST {{base}}/api/nodes/{{subId}}/acl
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"read","effect":"deny"}
+
+###
+@denyId = {{denySub.response.body.$.id}}
+
+### 13) Deny kazanır: liste boş, read: false
+GET {{base}}/api/nodes?parent_id={{rootId}}
+Authorization: Bearer {{calisanToken}}
+
+### 14) Deny kaydını kaldır → 204
+DELETE {{base}}/api/nodes/{{subId}}/acl/{{denyId}}
+Authorization: Bearer {{adminToken}}
+
+### 15) Hemen tekrar görünür (önbellek yok)
+GET {{base}}/api/nodes?parent_id={{rootId}}
+Authorization: Bearer {{calisanToken}}
+
+### 16) Grup oluştur
+# @name createGroup
+POST {{base}}/api/groups
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"name":"Hukuk Ekibi"}
+
+###
+@groupId = {{createGroup.response.body.$.id}}
+
+### 17) Çalışanı gruba ekle → 204
+POST {{base}}/api/groups/{{groupId}}/members
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"user_id":"{{calisanId}}"}
+
+### 18) Gruba kökte write ver
+POST {{base}}/api/nodes/{{rootId}}/acl
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"group","subject_id":"{{groupId}}","permission":"write","effect":"allow"}
+
+### 19) Admin, çalışanın alt klasördeki yetkisine bakar → write: true
+GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
+Authorization: Bearer {{adminToken}}
+
+### 20) Çalışanı gruptan çıkar → 204
+DELETE {{base}}/api/groups/{{groupId}}/members/{{calisanId}}
+Authorization: Bearer {{adminToken}}
+
+### 21) Aynı sorgu → write: false (üyelik kalkınca anında)
+GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
+Authorization: Bearer {{adminToken}}
