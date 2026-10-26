@@ -33,7 +33,7 @@ POST {{base}}/api/nodes
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
-{"kind":"folder","name":"Hukuk3"}
+{"kind":"folder","name":"Hukuk4"}
 
 ###
 @rootId = {{createRoot.response.body.$.id}}
