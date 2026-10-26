@@ -76,6 +76,11 @@ Hiyerarşik yetki kontrollerinde ata kimliklerini saklayan `ancestor_ids` yakla�
 
 Diğer sınırlamalar ve mimari için [DECISIONS.md](DECISIONS.md) dosyasına bakın.
 
+## Eksikler
+- Kapsamlı front end
+- make load ile k6 yük testi
+- `Idempotency-Key` başlığı desteği
+- F-1 yeniden adlandırma ve silme
 
 ## T-1 Performans Kanıtı (ilk test)
 
