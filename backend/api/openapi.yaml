@@ -1,0 +1,867 @@
+openapi: 3.0.3
+info:
+  title: KasaDoc API
+  version: 1.0.0
+  description: |
+    Kurumsal doküman yönetimi ve güvenli arşiv sistemi.
+
+    * Kimlik doğrulama: `POST /api/auth/login` ile alınan access token `Authorization: Bearer <token>` başlığında gönderilir (varsayılan ömür 15 dk).
+    * Tüm hatalar `{"error":{"code":"...","message":"..."}}` biçimindedir.
+    * Listeler anahtar kümeli sayfalanır: yanıttaki `next_cursor` bir sonraki istekte `after` olarak verilir.
+    * Roller: employee (çalışan), unit_manager (birim yöneticisi), archivist (arşiv sorumlusu), legal (hukuk/uyum), auditor (denetçi), admin (sistem yöneticisi).
+    * Dosya ve klasör yetkileri (read, write, delete, share, manage) ACL ile verilir. Üst klasördeki kayıtlar alt öğelere miras kalır, `deny` her zaman kazanır. Yetki değişikliği anında geçerlidir (önbellek yoktur).
+servers:
+  - url: http://localhost:8080
+    description: docker compose
+security:
+  - bearerAuth: []
+tags:
+  - {name: Sistem}
+  - {name: Kimlik}
+  - {name: Klasörler ve yetki}
+  - {name: Dosyalar}
+  - {name: Sürümler}
+  - {name: Etiket ve arama}
+  - {name: Paylaşım}
+  - {name: Saklama ve imha}
+  - {name: Onay akışı}
+  - {name: Denetim}
+  - {name: Yönetim}
+
+paths:
+  /health:
+    get:
+      tags: [Sistem]
+      summary: Sağlık durumu (veritabanı bağlantısı dahil)
+      security: []
+      responses:
+        '200': {description: "Sağlıklı", content: {application/json: {schema: {type: object, properties: {status: {type: string, example: ok}, database: {type: string, example: up}}}}}}
+        '503': {description: "Veritabanına erişilemiyor"}
+  /openapi.yaml:
+    get:
+      tags: [Sistem]
+      summary: Bu belge
+      security: []
+      responses:
+        '200': {description: "OpenAPI belgesi", content: {application/yaml: {schema: {type: string}}}}
+  /docs:
+    get:
+      tags: [Sistem]
+      summary: Swagger UI (tarayıcıda deneme arayüzü)
+      security: []
+      responses:
+        '200': {description: "HTML sayfası"}
+
+  /api/auth/login:
+    post:
+      tags: [Kimlik]
+      summary: E-posta ve parola ile giriş
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string, format: email}
+                password: {type: string}
+      responses:
+        '200': {description: "Token çifti", content: {application/json: {schema: {$ref: '#/components/schemas/Tokens'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {description: "E-posta veya parola hatalı (invalid_credentials)", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/auth/refresh:
+    post:
+      tags: [Kimlik]
+      summary: Refresh token ile yeni token çifti
+      description: Rol, veritabanından güncel haliyle okunur.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string}
+      responses:
+        '200': {description: "Token çifti", content: {application/json: {schema: {$ref: '#/components/schemas/Tokens'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/me:
+    get:
+      tags: [Kimlik]
+      summary: Giriş yapan kullanıcı
+      responses:
+        '200': {description: "Kullanıcı", content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/admin/ping:
+    get:
+      tags: [Kimlik]
+      summary: Rol denemesi (yalnızca admin)
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/nodes:
+    post:
+      tags: [Klasörler ve yetki]
+      summary: Klasör oluştur
+      description: Kök klasörü yalnızca admin, unit_manager ve archivist açabilir. Alt klasör için üst klasörde `write` gerekir. Oluşturana beş izin için açık `allow` kaydı yazılır.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, name]
+              properties:
+                parent_id: {type: string, format: uuid, nullable: true}
+                kind: {type: string, enum: [folder]}
+                name: {type: string, minLength: 1, maxLength: 255}
+      responses:
+        '201': {description: "Oluşturuldu", content: {application/json: {schema: {$ref: '#/components/schemas/Node'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    get:
+      tags: [Klasörler ve yetki]
+      summary: Klasör içeriğini listele
+      description: "`parent_id` verilmezse kök klasörler listelenir. Yalnızca `read` yetkisi olan (ve `deny` ile reddedilmemiş) öğeler döner."
+      parameters:
+        - {name: parent_id, in: query, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/After'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: "Sayfa", content: {application/json: {schema: {$ref: '#/components/schemas/NodeList'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/nodes/{id}/acl:
+    post:
+      tags: [Klasörler ve yetki]
+      summary: Yetki ver veya reddet (upsert)
+      description: Düğümde `manage` gerekir. Aynı (düğüm, özne, izin) için kayıt varsa etkisi güncellenir. İşlem denetim zincirine yazılır.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject_type, subject_id, permission, effect]
+              properties:
+                subject_type: {type: string, enum: [user, group]}
+                subject_id: {type: string, format: uuid}
+                permission: {type: string, enum: [read, write, delete, share, manage]}
+                effect: {type: string, enum: [allow, deny]}
+      responses:
+        '200': {description: "Kayıt", content: {application/json: {schema: {$ref: '#/components/schemas/AclEntry'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/nodes/{id}/acl/{entryId}:
+    delete:
+      tags: [Klasörler ve yetki]
+      summary: Yetki kaydını kaldır
+      description: Düğümde `manage` gerekir. Etki anında başlar.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/EntryId'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/nodes/{id}/effective-permissions:
+    get:
+      tags: [Klasörler ve yetki]
+      summary: Etkin yetkiler (miras, grup üyeliği ve deny dahil)
+      description: "`user_id` ile başkasının yetkisi yalnızca admin, auditor veya düğümde `manage` sahibi tarafından sorgulanabilir."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: user_id, in: query, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: "Etkin yetkiler", content: {application/json: {schema: {$ref: '#/components/schemas/EffectivePermissions'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/nodes/{id}/files:
+    post:
+      tags: [Dosyalar]
+      summary: Klasöre dosya yükle
+      description: |
+        Klasörde `write` gerekir. Sunucu sırasıyla şunları doğrular: dosya adı (yol gezinmesi, uzantı izin listesi), boyut sınırı, zararlı imza taraması (bulunursa **karantina**), uzantı ile magic byte/MIME uyumu, arşivlerde ZIP bombası/zip-slip/sembolik bağlantı/parolalı arşiv kontrolü.
+        İçerik SHA-256 ile adreslenir; aynı içerik tek kopya saklanır (`deduplicated`), yetkiler dosya başına ayrıdır.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody: {$ref: '#/components/requestBodies/FileUpload'}
+      responses:
+        '201': {description: "Yüklendi", content: {application/json: {schema: {$ref: '#/components/schemas/UploadResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/files/{id}/download-link:
+    post:
+      tags: [Dosyalar]
+      summary: Süreli, imzalı indirme bağlantısı al
+      description: Dosyada `read` gerekir. Bağlantı isteyen kullanıcıya bağlıdır (HMAC-SHA256, varsayılan 5 dk).
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {description: "Bağlantı", content: {application/json: {schema: {type: object, properties: {url: {type: string}, expires_at: {type: string, format: date-time}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/download/{id}:
+    get:
+      tags: [Dosyalar]
+      summary: İmzalı bağlantıyla indir
+      description: |
+        `Authorization` başlığı gerekmez, kimliği imza taşır. İndirme anında kullanıcının `read` yetkisi **yeniden** denetlenir; yetki geri alınmışsa eski bağlantı çalışmaz. Denetim kaydı yazılamazsa indirme yapılmaz.
+      security: []
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: uid, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: exp, in: query, required: true, schema: {type: integer, format: int64}}
+        - {name: sig, in: query, required: true, schema: {type: string}}
+        - {name: version, in: query, description: "Sürüm numarası, verilmezse son sürüm", schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+  /api/quarantine:
+    get:
+      tags: [Dosyalar]
+      summary: Karantinaya alınan yüklemeler
+      description: "Roller: auditor, admin."
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/files/{id}/versions:
+    post:
+      tags: [Sürümler]
+      summary: Yeni sürüm yükle
+      description: Dosyada `write` gerekir. Uzantı mevcut dosyayla aynı olmalıdır. Yükleme kuralları (zararlı imza, magic byte vb.) aynen uygulanır. Sürüm numarası dosya satırı kilitlenerek verilir.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody: {$ref: '#/components/requestBodies/FileUpload'}
+      responses:
+        '201': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMedia'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+    get:
+      tags: [Sürümler]
+      summary: Sürüm geçmişi
+      description: Dosyada `read` gerekir.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/files/{id}/versions/{no}/restore:
+    post:
+      tags: [Sürümler]
+      summary: Eski sürüme dön
+      description: Eski sürümün içeriği **yeni bir sürüm** olarak eklenir, geçmiş korunur. Dosyada `write` gerekir.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/VersionNo'}
+      responses:
+        '201': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/nodes/{id}/tags:
+    post:
+      tags: [Etiket ve arama]
+      summary: Etiket ekle
+      description: Düğümde `write` gerekir. Etiket küçük harfe çevrilir (1-32 karakter, `a-z 0-9 _ -`). Var olan etiket için 200, yeni için 201 döner.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              properties:
+                tag: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '201': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    get:
+      tags: [Etiket ve arama]
+      summary: Etiketleri listele
+      description: Düğümde `read` gerekir.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/nodes/{id}/tags/{tag}:
+    delete:
+      tags: [Etiket ve arama]
+      summary: Etiketi kaldır
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/TagName'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/search:
+    get:
+      tags: [Etiket ve arama]
+      summary: Ad, etiket ve türe göre arama
+      description: Sonuçlar listelemeyle aynı yetki kuralıyla süzülür; yetkisiz kullanıcı öğenin varlığını göremez. `q` içindeki `%` ve `_` joker olarak çalışmaz.
+      parameters:
+        - {name: q, in: query, description: "Ad içinde geçen metin (büyük/küçük harf duyarsız)", schema: {type: string, maxLength: 100}}
+        - {name: tag, in: query, schema: {type: string}}
+        - {name: kind, in: query, schema: {type: string, enum: [file, folder]}}
+        - {$ref: '#/components/parameters/After'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: "Sayfa", content: {application/json: {schema: {$ref: '#/components/schemas/NodeList'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/nodes/{id}/share-links:
+    post:
+      tags: [Paylaşım]
+      summary: Süreli paylaşım bağlantısı oluştur
+      description: |
+        Dosyada `share` gerekir. Token 256 bit rastgeledir ve **yalnızca bu yanıtta** döner; veritabanında SHA-256 özeti saklanır. Parola argon2id ile saklanır.
+        Bağlantı, oluşturanın dosyadaki `read` yetkisine bağlıdır: yetki kalkarsa bağlantı kapanır.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expires_in_seconds]
+              properties:
+                expires_in_seconds: {type: integer, minimum: 60, maximum: 2592000}
+                max_downloads: {type: integer, minimum: 1, maximum: 10000}
+                password: {type: string, minLength: 8, maxLength: 128}
+      responses:
+        '201': {description: "Oluşturuldu", content: {application/json: {schema: {$ref: '#/components/schemas/ShareLinkCreated'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    get:
+      tags: [Paylaşım]
+      summary: Dosyanın paylaşım bağlantıları (token dönmez)
+      description: Dosyada `share` gerekir. Durum alanı `active`, `expired`, `revoked` veya `exhausted` olur.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/share-links/{id}:
+    delete:
+      tags: [Paylaşım]
+      summary: Bağlantıyı iptal et
+      description: Dosyada `share` gerekir. Tekrar iptal de 204 döner.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/s/{token}:
+    get:
+      tags: [Paylaşım]
+      summary: Bağlantı bilgisi (kimlik gerekmez, sayacı artırmaz)
+      security: []
+      parameters:
+        - {$ref: '#/components/parameters/ShareToken'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '429': {$ref: '#/components/responses/TooMany'}
+  /api/s/{token}/download:
+    get:
+      tags: [Paylaşım]
+      summary: Parolasız bağlantıdan indir
+      description: Parolalı bağlantılarda 401 `password_required` döner, `POST` kullanılmalıdır. İndirme sayısı tek atomik koşullu UPDATE ile sınırlanır.
+      security: []
+      parameters:
+        - {$ref: '#/components/parameters/ShareToken'}
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '429': {$ref: '#/components/responses/TooMany'}
+    post:
+      tags: [Paylaşım]
+      summary: Parolalı bağlantıdan indir
+      description: Parola URL'de değil gövdede gider. Brute-force koruması (bağlantı ve adres başına 5 hatalı deneme, bağlantı başına 30 hatalı deneme, 15 dk kilit) uygulanır. Kilitliyken doğru parola da 429 döner.
+      security: []
+      parameters:
+        - {$ref: '#/components/parameters/ShareToken'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '401': {description: "Parola hatalı (invalid_password)", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '429': {$ref: '#/components/responses/TooMany'}
+
+  /api/document-types:
+    get:
+      tags: [Saklama ve imha]
+      summary: Belge türleri ve saklama süreleri
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Saklama ve imha]
+      summary: Belge türü ekle
+      description: "Roller: archivist, admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, retention_days]
+              properties:
+                code: {type: string, pattern: '^[a-z][a-z0-9_]{1,31}$'}
+                name: {type: string}
+                retention_days: {type: integer, minimum: 0, maximum: 36500}
+      responses:
+        '201': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/files/{id}/retention:
+    put:
+      tags: [Saklama ve imha]
+      summary: Dosyaya belge türü ata (saklama bitişi = oluşturma tarihi + tür süresi)
+      description: "Roller: archivist, admin. Kayıt bir kez atanır (tekrarı 409)."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doc_type]
+              properties:
+                doc_type: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    get:
+      tags: [Saklama ve imha]
+      summary: Saklama durumu (tür, bitiş, aktif hukuki bekletme, imha zamanı)
+      description: "Roller: archivist, auditor, legal, admin."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/nodes/{id}/legal-holds:
+    post:
+      tags: [Saklama ve imha]
+      summary: Hukuki bekletme koy (altındaki tüm dosyaları kapsar)
+      description: "Rol: legal."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [case_ref]
+              properties:
+                case_ref: {type: string, maxLength: 200}
+                reason: {type: string, maxLength: 1000}
+      responses:
+        '201': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    get:
+      tags: [Saklama ve imha]
+      summary: Düğümü ve atalarını kapsayan bekletmeler
+      description: "Roller: archivist, auditor, legal, admin."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/legal-holds/{id}/release:
+    post:
+      tags: [Saklama ve imha]
+      summary: Hukuki bekletmeyi kaldır
+      description: "Rol: legal. Tekrar çağrı 204 döner."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/retention/run:
+    post:
+      tags: [Saklama ve imha]
+      summary: İmha job'ını çalıştır
+      description: |
+        Roller: archivist, admin. Süresi dolan belgeler imha edilir, hukuki bekletme altındakiler atlanır (`blocked_by_hold`).
+        **Idempotent ve eşzamanlı çalıştırmaya dayanıklıdır**: her belge kendi transaction'ında kilit altında yeniden kontrol edilir. Her imha için tutanak üretilir. Sunucu ayrıca `RETENTION_INTERVAL` aralığında kendisi de çalıştırır.
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 5000, default: 500}}
+      responses:
+        '200': {description: "Çalıştırma özeti", content: {application/json: {schema: {$ref: '#/components/schemas/RetentionRun'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/destruction-certificates:
+    get:
+      tags: [Saklama ve imha]
+      summary: İmha tutanakları
+      description: "Roller: archivist, auditor, admin."
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/destruction-certificates/{id}:
+    get:
+      tags: [Saklama ve imha]
+      summary: İmha tutanağı ve doğrulaması
+      description: "Roller: archivist, auditor, admin. `verification` alanı gövde hash'ini ve denetim zincirindeki kaydı yeniden doğrular."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/files/{id}/approval-requests:
+    post:
+      tags: [Onay akışı]
+      summary: Onay talebi aç
+      description: Dosyada `write` gerekir. Bir dosya için aynı anda yalnızca bir bekleyen talep olabilir.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: {type: string, maxLength: 500}
+      responses:
+        '201': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/approval-requests:
+    get:
+      tags: [Onay akışı]
+      summary: Onay talepleri
+      description: unit_manager ve admin hepsini, diğer roller yalnızca kendi taleplerini görür.
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [pending, approved, rejected], default: pending}}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/approval-requests/{id}/decide:
+    post:
+      tags: [Onay akışı]
+      summary: Talebi onayla veya reddet
+      description: |
+        Roller: unit_manager, admin. **Görev ayrılığı:** talep sahibi kendi talebini karara bağlayamaz (403 `self_approval`; ayrıca veritabanı CHECK kısıtı vardır). Karar tek koşullu UPDATE ile verilir, eşzamanlı kararlardan yalnızca biri kazanır, diğerleri 409 `already_decided` alır.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: {type: string, enum: [approve, reject]}
+                comment: {type: string, maxLength: 500}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/audit:
+    get:
+      tags: [Denetim]
+      summary: Denetim kayıtları (hash zincirli, değiştirilemez)
+      description: "Roller: auditor, admin. Her kayıt kim, ne zaman, neyi, eski/yeni değer ve zincir hash'ini taşır."
+      parameters:
+        - {name: after, in: query, description: "Önceki yanıttaki next_cursor (sıra numarası)", schema: {type: integer, format: int64, minimum: 0}}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/audit/verify:
+    get:
+      tags: [Denetim]
+      summary: Hash zincirini baştan sona doğrula
+      description: "Roller: auditor, admin. Bozulma varsa `valid:false`, `broken_seq` ve sebep döner. `head_hash` dışarıda saklanırsa son satırların silinmesi de fark edilir."
+      responses:
+        '200': {description: "Doğrulama sonucu", content: {application/json: {schema: {$ref: '#/components/schemas/AuditVerify'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/groups:
+    post:
+      tags: [Yönetim]
+      summary: Grup oluştur
+      description: "Rol: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+      responses:
+        '201': {$ref: '#/components/responses/OkObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/groups/{id}/members:
+    post:
+      tags: [Yönetim]
+      summary: Gruba üye ekle
+      description: "Rol: admin."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: {type: string, format: uuid}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/groups/{id}/members/{userId}:
+    delete:
+      tags: [Yönetim]
+      summary: Gruptan üye çıkar (yetkiler anında biter)
+      description: "Rol: admin."
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/UserId'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+
+  parameters:
+    Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    EntryId: {name: entryId, in: path, required: true, schema: {type: string, format: uuid}}
+    UserId: {name: userId, in: path, required: true, schema: {type: string, format: uuid}}
+    VersionNo: {name: no, in: path, required: true, schema: {type: integer, minimum: 1}}
+    TagName: {name: tag, in: path, required: true, schema: {type: string}}
+    ShareToken: {name: token, in: path, required: true, schema: {type: string, minLength: 43, maxLength: 43}}
+    After: {name: after, in: query, description: "Önceki yanıttaki next_cursor", schema: {type: string, format: uuid}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+
+  requestBodies:
+    FileUpload:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required: [file]
+            properties:
+              file: {type: string, format: binary}
+
+  responses:
+    OkObject: {description: "Başarılı", content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+    NoContent: {description: "Başarılı (gövde yok)"}
+    Binary: {description: "Dosya içeriği (Content-Disposition: attachment, X-Content-Type-Options: nosniff)", content: {'*/*': {schema: {type: string, format: binary}}}}
+    BadRequest: {description: "Geçersiz istek", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unauthorized: {description: "Kimlik doğrulama gerekli veya token geçersiz", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Forbidden: {description: "Yetki yok", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: "Bulunamadı", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Conflict: {description: "Çakışma", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Gone: {description: "Bağlantı süresi dolmuş, iptal edilmiş veya hakkı tükenmiş", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    TooLarge: {description: "Dosya boyut sınırını aşıyor (file_too_large)", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    UnsupportedMedia: {description: "Uzantı izinli değil veya içerik uzantıyla uyuşmuyor (unsupported_extension, content_mismatch, extension_mismatch)", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unprocessable: {description: "Zararlı imza (malware_detected, dosya karantinaya alınır) veya güvensiz arşiv (archive_rejected)", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    TooMany: {description: "Hız sınırı veya hatalı deneme kilidi; Retry-After başlığı döner", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: {type: string, example: forbidden}
+            message: {type: string, example: Bu işlem için yetkiniz yok}
+    Tokens:
+      type: object
+      properties:
+        access_token: {type: string}
+        refresh_token: {type: string}
+        token_type: {type: string, example: Bearer}
+        role: {type: string, enum: [employee, unit_manager, archivist, legal, auditor, admin]}
+    User:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string}
+        full_name: {type: string}
+        role: {type: string}
+    Node:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        parent_id: {type: string, format: uuid, nullable: true}
+        kind: {type: string, enum: [folder, file]}
+        name: {type: string}
+        owner_id: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+    NodeList:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Node'}}
+        next_cursor: {type: string, format: uuid, nullable: true}
+    AclEntry:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        node_id: {type: string, format: uuid}
+        subject_type: {type: string, enum: [user, group]}
+        subject_id: {type: string, format: uuid}
+        permission: {type: string}
+        effect: {type: string, enum: [allow, deny]}
+        created_at: {type: string, format: date-time}
+    EffectivePermissions:
+      type: object
+      properties:
+        node_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        permissions:
+          type: object
+          additionalProperties: {type: boolean}
+          example: {read: true, write: false, delete: false, share: false, manage: false}
+    UploadResult:
+      type: object
+      properties:
+        node: {$ref: '#/components/schemas/Node'}
+        version_no: {type: integer, example: 1}
+        sha256: {type: string}
+        size_bytes: {type: integer, format: int64}
+        mime_type: {type: string}
+        deduplicated: {type: boolean, description: "Aynı içerik zaten saklanıyordu"}
+    ShareLinkCreated:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        token: {type: string, description: "Yalnızca bu yanıtta döner"}
+        url: {type: string}
+        download_url: {type: string}
+        expires_at: {type: string, format: date-time}
+        max_downloads: {type: integer, nullable: true}
+        password_protected: {type: boolean}
+    RetentionRun:
+      type: object
+      properties:
+        checked: {type: integer}
+        destroyed: {type: integer}
+        blocked_by_hold: {type: integer}
+        failed: {type: integer}
+        certificates: {type: array, items: {type: string, format: uuid}}
+    AuditVerify:
+      type: object
+      properties:
+        valid: {type: boolean}
+        checked: {type: integer, format: int64}
+        head_hash: {type: string}
+        broken_seq: {type: integer, format: int64, nullable: true}
+        reason: {type: string}

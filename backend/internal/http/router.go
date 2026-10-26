@@ -46,6 +46,8 @@ func NewRouter(d Deps) http.Handler {
 	certs := role("archivist", "auditor", "admin")
 
 	mux.HandleFunc("GET /health", d.health)
+	mux.HandleFunc("GET /openapi.yaml", d.openapiSpec)
+	mux.HandleFunc("GET /docs", d.docsPage)
 	mux.HandleFunc("POST /api/auth/login", d.login)
 	mux.HandleFunc("POST /api/auth/refresh", d.refresh)
 

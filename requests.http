@@ -1,25 +1,69 @@
+# KasaDoc: tüm uç noktalar için REST Client (VS Code) koleksiyonu.
+# Önce: docker compose up --build -d --wait
+# İstekleri yukarıdan aşağıya sırayla gönderin; her bölüm bir öncekinin çıktısını kullanır.
+# Access token ömrü 15 dk: süre dolarsa "1) Giriş" isteklerini yeniden gönderin.
+# Tekrar çalıştırırken klasör adları çakışmasın diye @run değerini değiştirin (409 alırsanız bu yüzdendir).
+
 @base = http://localhost:8080
 @pw = Demo1234!
+@run = a1
 
-### 1) Admin girişi
+################################################################
+# 1) GİRİŞ (her rol için bir demo hesap, parola hepsi için aynı)
+################################################################
+
+### 1.1 Admin
 # @name loginAdmin
 POST {{base}}/api/auth/login
 Content-Type: application/json
 
 {"email":"admin@kasadoc.local","password":"{{pw}}"}
 
-### 2) Çalışan girişi
+### 1.2 Çalışan
 # @name loginCalisan
 POST {{base}}/api/auth/login
 Content-Type: application/json
 
 {"email":"calisan@kasadoc.local","password":"{{pw}}"}
 
+### 1.3 Birim yöneticisi
+# @name loginYonetici
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"yonetici@kasadoc.local","password":"{{pw}}"}
+
+### 1.4 Arşiv sorumlusu
+# @name loginArsiv
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"arsiv@kasadoc.local","password":"{{pw}}"}
+
+### 1.5 Hukuk / uyum
+# @name loginHukuk
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"hukuk@kasadoc.local","password":"{{pw}}"}
+
+### 1.6 Denetçi
+# @name loginDenetci
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"denetci@kasadoc.local","password":"{{pw}}"}
+
 ###
 @adminToken = {{loginAdmin.response.body.$.access_token}}
 @calisanToken = {{loginCalisan.response.body.$.access_token}}
+@yoneticiToken = {{loginYonetici.response.body.$.access_token}}
+@arsivToken = {{loginArsiv.response.body.$.access_token}}
+@hukukToken = {{loginHukuk.response.body.$.access_token}}
+@denetciToken = {{loginDenetci.response.body.$.access_token}}
+@refreshToken = {{loginCalisan.response.body.$.refresh_token}}
 
-### 3) Çalışanın kimliği
+### 1.7 Çalışanın kimliği
 # @name meCalisan
 GET {{base}}/api/me
 Authorization: Bearer {{calisanToken}}
@@ -27,18 +71,52 @@ Authorization: Bearer {{calisanToken}}
 ###
 @calisanId = {{meCalisan.response.body.$.id}}
 
-### 4) Admin kök klasör oluşturur
+################################################################
+# 2) SAĞLIK, KİMLİK DOĞRULAMA VE ROL DENEMELERİ
+################################################################
+
+### 2.1 Sağlık (veritabanı dahil) → 200
+GET {{base}}/health
+
+### 2.2 Yanlış parola → 401 invalid_credentials
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"email":"admin@kasadoc.local","password":"yanlis"}
+
+### 2.3 Token olmadan → 401
+GET {{base}}/api/me
+
+### 2.4 Refresh ile yeni token çifti → 200
+POST {{base}}/api/auth/refresh
+Content-Type: application/json
+
+{"refresh_token":"{{refreshToken}}"}
+
+### 2.5 Admin ucu, admin → 200
+GET {{base}}/api/admin/ping
+Authorization: Bearer {{adminToken}}
+
+### 2.6 Admin ucu, çalışan → 403
+GET {{base}}/api/admin/ping
+Authorization: Bearer {{calisanToken}}
+
+################################################################
+# 3) KLASÖR VE DOSYA YÖNETİMİ (F-1)
+################################################################
+
+### 3.1 Kök klasör (admin) → 201
 # @name createRoot
 POST {{base}}/api/nodes
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
-{"kind":"folder","name":"Hukuk4"}
+{"kind":"folder","name":"Demo-{{run}}"}
 
 ###
 @rootId = {{createRoot.response.body.$.id}}
 
-### 5) Admin alt klasör oluşturur
+### 3.2 Alt klasör → 201
 # @name createSub
 POST {{base}}/api/nodes
 Authorization: Bearer {{adminToken}}
@@ -49,112 +127,23 @@ Content-Type: application/json
 ###
 @subId = {{createSub.response.body.$.id}}
 
-### 6) Çalışan kökleri listeler → items boş olmalı
-GET {{base}}/api/nodes
-Authorization: Bearer {{calisanToken}}
-
-### 7) Admin çalışana kökte read verir
-# @name grantRead
-POST {{base}}/api/nodes/{{rootId}}/acl
+### 3.3 Aynı ad → 409
+POST {{base}}/api/nodes
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
-{"subject_type":"user","subject_id":"{{calisanId}}","permission":"read","effect":"allow"}
+{"parent_id":"{{rootId}}","kind":"folder","name":"Sozlesmeler"}
 
-### 8) Çalışan kökü görür (200)
-GET {{base}}/api/nodes
-Authorization: Bearer {{calisanToken}}
-
-### 9) Çalışan alt klasörü miras ile görür
-GET {{base}}/api/nodes?parent_id={{rootId}}
-Authorization: Bearer {{calisanToken}}
-
-### 10) Alt klasörde etkin yetki → read: true, diğerleri false
-GET {{base}}/api/nodes/{{subId}}/effective-permissions
-Authorization: Bearer {{calisanToken}}
-
-### 11) Çalışan yetki vermeye çalışır → 403
-POST {{base}}/api/nodes/{{subId}}/acl
+### 3.4 Çalışan kök klasör açamaz → 403
+POST {{base}}/api/nodes
 Authorization: Bearer {{calisanToken}}
 Content-Type: application/json
 
-{"subject_type":"user","subject_id":"{{calisanId}}","permission":"write","effect":"allow"}
+{"kind":"folder","name":"Yetkisiz-{{run}}"}
 
-### 12) Admin alt klasörde çalışana read DENY koyar
-# @name denySub
-POST {{base}}/api/nodes/{{subId}}/acl
-Authorization: Bearer {{adminToken}}
-Content-Type: application/json
-
-{"subject_type":"user","subject_id":"{{calisanId}}","permission":"read","effect":"deny"}
-
-###
-@denyId = {{denySub.response.body.$.id}}
-
-### 13) Deny kazanır: liste boş, read: false
-GET {{base}}/api/nodes?parent_id={{rootId}}
-Authorization: Bearer {{calisanToken}}
-
-### 14) Deny kaydını kaldır → 204
-DELETE {{base}}/api/nodes/{{subId}}/acl/{{denyId}}
-Authorization: Bearer {{adminToken}}
-
-### 15) Hemen tekrar görünür (önbellek yok)
-GET {{base}}/api/nodes?parent_id={{rootId}}
-Authorization: Bearer {{calisanToken}}
-
-### 16) Grup oluştur
-# @name createGroup
-POST {{base}}/api/groups
-Authorization: Bearer {{adminToken}}
-Content-Type: application/json
-
-{"name":"Hukuk Ekibi"}
-
-###
-@groupId = {{createGroup.response.body.$.id}}
-
-### 17) Çalışanı gruba ekle → 204
-POST {{base}}/api/groups/{{groupId}}/members
-Authorization: Bearer {{adminToken}}
-Content-Type: application/json
-
-{"user_id":"{{calisanId}}"}
-
-### 18) Gruba kökte write ver
-POST {{base}}/api/nodes/{{rootId}}/acl
-Authorization: Bearer {{adminToken}}
-Content-Type: application/json
-
-{"subject_type":"group","subject_id":"{{groupId}}","permission":"write","effect":"allow"}
-
-### 19) Admin, çalışanın alt klasördeki yetkisine bakar → write: true
-GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
-Authorization: Bearer {{adminToken}}
-
-### 20) Çalışanı gruptan çıkar → 204
-DELETE {{base}}/api/groups/{{groupId}}/members/{{calisanId}}
-Authorization: Bearer {{adminToken}}
-
-### 21) Aynı sorgu → write: false (üyelik kalkınca anında)
-GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
-Authorization: Bearer {{adminToken}}
-
-### 22) Denetim kaydı listesi (admin)
-GET {{base}}/api/audit
-Authorization: Bearer {{adminToken}}
-
-### 23) Zincir doğrulama → "valid": true
-GET {{base}}/api/audit/verify
-Authorization: Bearer {{adminToken}}
-
-### 24) Çalışan denetim kaydına giremez → 403
-GET {{base}}/api/audit
-Authorization: Bearer {{calisanToken}}
-
-### 25) Dosya yükle
-# @name uploadDoc
-POST {{base}}/api/nodes/{{rootId}}/files
+### 3.5 Dosya yükle (admin) → 201
+# @name uploadFile
+POST {{base}}/api/nodes/{{subId}}/files
 Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----kd
 
@@ -166,21 +155,143 @@ Bu bir deneme raporudur.
 ------kd--
 
 ###
-@fileId = {{uploadDoc.response.body.$.node.id}}
+@fileId = {{uploadFile.response.body.$.node.id}}
 
-### 26) İndirme bağlantısı al
+### 3.6 Kökleri listele (anahtar kümeli sayfalama: limit ve after)
+GET {{base}}/api/nodes?limit=5
+Authorization: Bearer {{adminToken}}
+
+### 3.7 Alt klasörün içeriği
+GET {{base}}/api/nodes?parent_id={{subId}}
+Authorization: Bearer {{adminToken}}
+
+################################################################
+# 4) HİYERARŞİK YETKİ (T-1)
+################################################################
+
+### 4.1 Çalışanın etkin yetkisi: hepsi false
+GET {{base}}/api/nodes/{{subId}}/effective-permissions
+Authorization: Bearer {{calisanToken}}
+
+### 4.2 Admin, kökte çalışana read verir
+POST {{base}}/api/nodes/{{rootId}}/acl
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"read","effect":"allow"}
+
+### 4.3 Miras: alt klasörde read: true
+GET {{base}}/api/nodes/{{subId}}/effective-permissions
+Authorization: Bearer {{calisanToken}}
+
+### 4.4 Çalışan artık içeriği görür
+GET {{base}}/api/nodes?parent_id={{rootId}}
+Authorization: Bearer {{calisanToken}}
+
+### 4.5 Alt klasörde read DENY (deny her zaman kazanır)
+# @name denySub
+POST {{base}}/api/nodes/{{subId}}/acl
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"read","effect":"deny"}
+
+###
+@denyId = {{denySub.response.body.$.id}}
+
+### 4.6 read: false ve liste boş
+GET {{base}}/api/nodes?parent_id={{rootId}}
+Authorization: Bearer {{calisanToken}}
+
+### 4.7 Admin, çalışanın etkin yetkisini sorgular
+GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
+Authorization: Bearer {{adminToken}}
+
+### 4.8 Çalışan başkasının yetkisini sorgulayamaz → 403
+GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
+Authorization: Bearer {{yoneticiToken}}
+
+### 4.9 Çalışan yetki veremez (manage yok) → 403
+POST {{base}}/api/nodes/{{subId}}/acl
+Authorization: Bearer {{calisanToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"write","effect":"allow"}
+
+### 4.10 Deny'ı kaldır → 204 (yetki anında geri gelir)
+DELETE {{base}}/api/nodes/{{subId}}/acl/{{denyId}}
+Authorization: Bearer {{adminToken}}
+
+### 4.11 read tekrar true
+GET {{base}}/api/nodes/{{subId}}/effective-permissions
+Authorization: Bearer {{calisanToken}}
+
+### 4.12 Grup oluştur → 201 (409 ise @run değiştirin)
+# @name createGroup
+POST {{base}}/api/groups
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"name":"Hukuk Ekibi {{run}}"}
+
+###
+@groupId = {{createGroup.response.body.$.id}}
+
+### 4.13 Çalışanı gruba ekle → 204
+POST {{base}}/api/groups/{{groupId}}/members
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"user_id":"{{calisanId}}"}
+
+### 4.14 Gruba kökte write ver
+POST {{base}}/api/nodes/{{rootId}}/acl
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"group","subject_id":"{{groupId}}","permission":"write","effect":"allow"}
+
+### 4.15 Çalışanın etkin yetkisi: write: true (grup üzerinden)
+GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
+Authorization: Bearer {{adminToken}}
+
+### 4.16 Üyelikten çıkar → 204
+DELETE {{base}}/api/groups/{{groupId}}/members/{{calisanId}}
+Authorization: Bearer {{adminToken}}
+
+### 4.17 Aynı sorgu: write: false (yetki anında bitti)
+GET {{base}}/api/nodes/{{subId}}/effective-permissions?user_id={{calisanId}}
+Authorization: Bearer {{adminToken}}
+
+################################################################
+# 5) GÜVENLİ YÜKLEME VE İMZALI İNDİRME (T-2)
+################################################################
+
+### 5.1 İndirme bağlantısı al (çalışan, miras read ile) → 200
 # @name dl
 POST {{base}}/api/files/{{fileId}}/download-link
-Authorization: Bearer {{adminToken}}
+Authorization: Bearer {{calisanToken}}
 
 ###
 @dlUrl = {{dl.response.body.$.url}}
 
-### 27) İndir (Authorization yok, imza yeterli)
+### 5.2 İmzalı bağlantıyla indir (Authorization yok, imza yeterli)
 GET {{base}}{{dlUrl}}
 
-### 28) Zararlı imzalı dosya → 422, karantina
+### 5.3 Aynı içerik başka klasöre → deduplicated: true, tek kopya
 POST {{base}}/api/nodes/{{rootId}}/files
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
+
+------kd
+Content-Disposition: form-data; name="file"; filename="kopya.txt"
+Content-Type: text/plain
+
+Bu bir deneme raporudur.
+------kd--
+
+### 5.4 Zararlı imzalı dosya → 422 malware_detected (karantina)
+POST {{base}}/api/nodes/{{subId}}/files
 Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----kd
 
@@ -191,12 +302,20 @@ Content-Type: text/plain
 KASADOC-TEST-MALWARE
 ------kd--
 
-### 29) Karantina listesi
-GET {{base}}/api/quarantine
+### 5.5 exe imzalı sahte .pdf → 415 content_mismatch
+POST {{base}}/api/nodes/{{subId}}/files
 Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
 
-### 30) Sahte uzantı (exe başlıklı .pdf yerine uzantısız) → 415
-POST {{base}}/api/nodes/{{rootId}}/files
+------kd
+Content-Disposition: form-data; name="file"; filename="fatura.pdf"
+Content-Type: application/pdf
+
+MZ-sahte-calistirilabilir-icerik
+------kd--
+
+### 5.6 İzin verilmeyen uzantı → 415 unsupported_extension
+POST {{base}}/api/nodes/{{subId}}/files
 Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----kd
 
@@ -207,25 +326,101 @@ Content-Type: application/octet-stream
 MZ
 ------kd--
 
-### 31) Paylaşım bağlantısı oluştur (parolasız, 3 indirme, 1 saat)
+### 5.7 Karantina listesi (denetçi)
+GET {{base}}/api/quarantine
+Authorization: Bearer {{denetciToken}}
+
+################################################################
+# 6) SÜRÜMLEME (F-2)
+################################################################
+
+### 6.1 Yeni sürüm yükle → version_no: 2
+POST {{base}}/api/files/{{fileId}}/versions
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----kd
+
+------kd
+Content-Disposition: form-data; name="file"; filename="rapor.txt"
+Content-Type: text/plain
+
+Bu raporun ikinci sürümüdür, içerik farklıdır.
+------kd--
+
+### 6.2 Sürüm geçmişi
+GET {{base}}/api/files/{{fileId}}/versions
+Authorization: Bearer {{adminToken}}
+
+### 6.3 1. sürüme dön → yeni sürüm (3) üretir, geçmiş korunur
+POST {{base}}/api/files/{{fileId}}/versions/1/restore
+Authorization: Bearer {{adminToken}}
+
+### 6.4 Eski sürümü indirme bağlantısı
+# @name dlAdmin
+POST {{base}}/api/files/{{fileId}}/download-link
+Authorization: Bearer {{adminToken}}
+
+###
+@dlAdminUrl = {{dlAdmin.response.body.$.url}}
+
+### 6.5 2. sürümü indir
+GET {{base}}{{dlAdminUrl}}&version=2
+
+################################################################
+# 7) ETİKET, ARAMA VE FİLTRELEME (F-3)
+################################################################
+
+### 7.1 Etiket ekle → 201
+POST {{base}}/api/nodes/{{fileId}}/tags
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"tag":"Gizli"}
+
+### 7.2 Etiketleri listele
+GET {{base}}/api/nodes/{{fileId}}/tags
+Authorization: Bearer {{adminToken}}
+
+### 7.3 Etikete göre ara
+GET {{base}}/api/search?tag=gizli
+Authorization: Bearer {{adminToken}}
+
+### 7.4 Ada ve türe göre ara
+GET {{base}}/api/search?q=RAPOR&kind=file
+Authorization: Bearer {{adminToken}}
+
+### 7.5 Etiketi kaldır → 204
+DELETE {{base}}/api/nodes/{{fileId}}/tags/gizli
+Authorization: Bearer {{adminToken}}
+
+################################################################
+# 8) PAYLAŞIM VE SÜRELİ BAĞLANTILAR (F-4, T-3)
+################################################################
+
+### 8.1 Bağlantı oluştur (1 saat, en çok 2 indirme) → 201, token yalnızca burada döner
 # @name shareA
 POST {{base}}/api/nodes/{{fileId}}/share-links
 Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
-{"expires_in_seconds":3600,"max_downloads":3}
+{"expires_in_seconds":3600,"max_downloads":2}
 
 ###
 @shareId = {{shareA.response.body.$.id}}
 @shareToken = {{shareA.response.body.$.token}}
 
-### 32) Bağlantı bilgisi (kimlik gerekmez)
+### 8.2 Bağlantı bilgisi (kimlik gerekmez)
 GET {{base}}/api/s/{{shareToken}}
 
-### 33) Bağlantıdan indir (kimlik gerekmez)
+### 8.3 İndir (1/2)
 GET {{base}}/api/s/{{shareToken}}/download
 
-### 34) Parolalı bağlantı oluştur
+### 8.4 İndir (2/2)
+GET {{base}}/api/s/{{shareToken}}/download
+
+### 8.5 Üçüncü indirme → 410 (hak tükendi)
+GET {{base}}/api/s/{{shareToken}}/download
+
+### 8.6 Parolalı bağlantı oluştur
 # @name shareB
 POST {{base}}/api/nodes/{{fileId}}/share-links
 Authorization: Bearer {{adminToken}}
@@ -236,70 +431,64 @@ Content-Type: application/json
 ###
 @tokenB = {{shareB.response.body.$.token}}
 
-### 35) Parolasız GET → 401 password_required
+### 8.7 Parolasız GET → 401 password_required
 GET {{base}}/api/s/{{tokenB}}/download
 
-### 36) Yanlış parola → 401
+### 8.8 Yanlış parola → 401 invalid_password (5 hatalı denemeden sonra 429)
 POST {{base}}/api/s/{{tokenB}}/download
 Content-Type: application/json
 
-{"password":"yanlis"}
+{"password":"yanlis-parola"}
 
-### 37) Doğru parola → 200
+### 8.9 Doğru parola → 200
 POST {{base}}/api/s/{{tokenB}}/download
 Content-Type: application/json
 
 {"password":"Sifre-12345"}
 
-### 38) Bağlantıları listele (token dönmez)
+### 8.10 Dosyanın bağlantıları (token dönmez, durum alanı var)
 GET {{base}}/api/nodes/{{fileId}}/share-links
 Authorization: Bearer {{adminToken}}
 
-### 39) İptal et → 204
+### 8.11 Bağlantıyı iptal et → 204
 DELETE {{base}}/api/share-links/{{shareId}}
 Authorization: Bearer {{adminToken}}
 
-### 40) İptalden sonra → 410
+### 8.12 İptal edilen bağlantı → 410
 GET {{base}}/api/s/{{shareToken}}/download
 
+### 8.13 Bilinmeyen token → 404
+GET {{base}}/api/s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/download
 
+################################################################
+# 9) SAKLAMA, HUKUKİ BEKLETME VE İMHA (F-5, T-4)
+################################################################
 
-
-
-
-
-### 41) Arşiv sorumlusu girişi
-# @name loginArsiv
-POST {{base}}/api/auth/login
-Content-Type: application/json
-
-{"email":"arsiv@kasadoc.local","password":"{{pw}}"}
-
-### 42) Hukuk girişi
-# @name loginHukuk
-POST {{base}}/api/auth/login
-Content-Type: application/json
-
-{"email":"hukuk@kasadoc.local","password":"{{pw}}"}
-
-###
-@arsivToken = {{loginArsiv.response.body.$.access_token}}
-@hukukToken = {{loginHukuk.response.body.$.access_token}}
-
-### 43) Belge türleri
+### 9.1 Belge türleri (sözleşme 3650, rapor 1825, yazışma 730 gün)
 GET {{base}}/api/document-types
 Authorization: Bearer {{arsivToken}}
 
-### 44) Hemen imhaya uygun demo türü (tekrarında 409 normal)
+### 9.2 Hemen imhaya uygun demo türü (409 ise zaten vardır, sorun değil)
 POST {{base}}/api/document-types
 Authorization: Bearer {{arsivToken}}
 Content-Type: application/json
 
-{"code":"gecici0","name":"Geçici (demo)","retention_days":0}
+{"code":"gecici0","name":"Geçici (demo, 0 gün)","retention_days":0}
 
-### 45) İmha demosu için dosya yükle (tekrarında adı değiştir)
-# @name uploadDemo
-POST {{base}}/api/nodes/{{rootId}}/files
+### 9.3 İmha demosu için ayrı klasör
+# @name createImhaRoot
+POST {{base}}/api/nodes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"kind":"folder","name":"Imha-{{run}}"}
+
+###
+@imhaRoot = {{createImhaRoot.response.body.$.id}}
+
+### 9.4 İmha edilecek dosya
+# @name uploadImha
+POST {{base}}/api/nodes/{{imhaRoot}}/files
 Authorization: Bearer {{adminToken}}
 Content-Type: multipart/form-data; boundary=----kd
 
@@ -311,39 +500,43 @@ Bu dosya imha edilecek.
 ------kd--
 
 ###
-@demoFileId = {{uploadDemo.response.body.$.node.id}}
+@imhaFile = {{uploadImha.response.body.$.node.id}}
 
-### 46) Saklama kaydı ata → 200
-PUT {{base}}/api/files/{{demoFileId}}/retention
+### 9.5 Saklama kaydı ata (arşiv sorumlusu) → 200
+PUT {{base}}/api/files/{{imhaFile}}/retention
 Authorization: Bearer {{arsivToken}}
 Content-Type: application/json
 
 {"doc_type":"gecici0"}
 
-### 47) Hukuk, klasöre bekletme koyar → 201
+### 9.6 Hukuk, klasöre bekletme koyar → 201
 # @name holdA
-POST {{base}}/api/nodes/{{rootId}}/legal-holds
+POST {{base}}/api/nodes/{{imhaRoot}}/legal-holds
 Authorization: Bearer {{hukukToken}}
 Content-Type: application/json
 
-{"case_ref":"DAVA-2026-1","reason":"Devam eden dava"}
+{"case_ref":"DAVA-2026-{{run}}","reason":"Devam eden dava"}
 
 ###
 @holdId = {{holdA.response.body.$.id}}
 
-### 48) İmha job'ı → blocked_by_hold ≥ 1, dosya hâlâ duruyor
+### 9.7 Bekletmeler
+GET {{base}}/api/nodes/{{imhaFile}}/legal-holds
+Authorization: Bearer {{arsivToken}}
+
+### 9.8 İmha job'ı → blocked_by_hold ≥ 1, destroyed: 0
 POST {{base}}/api/retention/run
 Authorization: Bearer {{arsivToken}}
 
-### 49) Saklama durumu → legal_hold_active: true
-GET {{base}}/api/files/{{demoFileId}}/retention
+### 9.9 Saklama durumu → legal_hold_active: true
+GET {{base}}/api/files/{{imhaFile}}/retention
 Authorization: Bearer {{arsivToken}}
 
-### 50) Bekletmeyi kaldır → 204
+### 9.10 Bekletmeyi kaldır → 204
 POST {{base}}/api/legal-holds/{{holdId}}/release
 Authorization: Bearer {{hukukToken}}
 
-### 51) İmha job'ı → destroyed ≥ 1, certificates dolu
+### 9.11 İmha job'ı → destroyed ≥ 1, certificates dolu
 # @name runDestroy
 POST {{base}}/api/retention/run
 Authorization: Bearer {{arsivToken}}
@@ -351,18 +544,120 @@ Authorization: Bearer {{arsivToken}}
 ###
 @certId = {{runDestroy.response.body.$.certificates[0]}}
 
-### 52) Tutanak ve doğrulama → verification.valid: true
+### 9.12 İmha tutanağı → verification.valid: true
 GET {{base}}/api/destruction-certificates/{{certId}}
 Authorization: Bearer {{arsivToken}}
 
-### 53) İmhadan sonra indirme bağlantısı → 404
-POST {{base}}/api/files/{{demoFileId}}/download-link
+### 9.13 Tutanak listesi
+GET {{base}}/api/destruction-certificates
+Authorization: Bearer {{denetciToken}}
+
+### 9.14 İmhadan sonra indirme bağlantısı → 404
+POST {{base}}/api/files/{{imhaFile}}/download-link
 Authorization: Bearer {{adminToken}}
 
-### 54) Tekrar çalıştır → destroyed 0 (idempotent)
+### 9.15 İdempotans: tekrar çalıştır → destroyed: 0
 POST {{base}}/api/retention/run
 Authorization: Bearer {{arsivToken}}
 
-### 55) Zincir doğrulama → valid: true
-GET {{base}}/api/audit/verify
+################################################################
+# 10) ONAY İŞ AKIŞI (F-6)
+################################################################
+
+### 10.1 Çalışana dosyada write ver (talep açabilsin)
+POST {{base}}/api/nodes/{{fileId}}/acl
 Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"subject_type":"user","subject_id":"{{calisanId}}","permission":"write","effect":"allow"}
+
+### 10.2 Çalışan onay talebi açar → 201 pending
+# @name approvalA
+POST {{base}}/api/files/{{fileId}}/approval-requests
+Authorization: Bearer {{calisanToken}}
+Content-Type: application/json
+
+{"note":"İncelemeye hazır"}
+
+###
+@approvalId = {{approvalA.response.body.$.id}}
+
+### 10.3 Yönetici bekleyen talepleri görür
+GET {{base}}/api/approval-requests?status=pending
+Authorization: Bearer {{yoneticiToken}}
+
+### 10.4 Çalışan karar veremez → 403
+POST {{base}}/api/approval-requests/{{approvalId}}/decide
+Authorization: Bearer {{calisanToken}}
+Content-Type: application/json
+
+{"decision":"approve","comment":"deneme"}
+
+### 10.5 Yönetici onaylar → 200 approved
+POST {{base}}/api/approval-requests/{{approvalId}}/decide
+Authorization: Bearer {{yoneticiToken}}
+Content-Type: application/json
+
+{"decision":"approve","comment":"Uygun"}
+
+### 10.6 İkinci karar → 409 already_decided
+POST {{base}}/api/approval-requests/{{approvalId}}/decide
+Authorization: Bearer {{yoneticiToken}}
+Content-Type: application/json
+
+{"decision":"reject","comment":"geç kalındı"}
+
+### 10.7 Admin kendi talebini açar
+# @name approvalB
+POST {{base}}/api/files/{{fileId}}/approval-requests
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"note":"Görev ayrılığı denemesi"}
+
+###
+@approvalSelfId = {{approvalB.response.body.$.id}}
+
+### 10.8 Admin kendi talebini onaylayamaz → 403 self_approval
+POST {{base}}/api/approval-requests/{{approvalSelfId}}/decide
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"decision":"approve"}
+
+### 10.9 Yönetici reddeder → 200 rejected
+POST {{base}}/api/approval-requests/{{approvalSelfId}}/decide
+Authorization: Bearer {{yoneticiToken}}
+Content-Type: application/json
+
+{"decision":"reject","comment":"Gerekçe eksik"}
+
+### 10.10 Onaylananlar (çalışan yalnızca kendi taleplerini görür)
+GET {{base}}/api/approval-requests?status=approved
+Authorization: Bearer {{calisanToken}}
+
+################################################################
+# 11) ERİŞİM KAYITLARI VE DENETİM RAPORLARI (F-7)
+################################################################
+
+### 11.1 Denetim kayıtları (denetçi; after ve limit ile sayfalanır)
+GET {{base}}/api/audit?limit=10
+Authorization: Bearer {{denetciToken}}
+
+### 11.2 Hash zincirini doğrula → valid: true
+GET {{base}}/api/audit/verify
+Authorization: Bearer {{denetciToken}}
+
+### 11.3 Çalışan denetim kaydına giremez → 403
+GET {{base}}/api/audit
+Authorization: Bearer {{calisanToken}}
+
+################################################################
+# 12) DOKÜMANTASYON
+################################################################
+
+### 12.1 OpenAPI belgesi
+GET {{base}}/openapi.yaml
+
+### 12.2 Swagger UI için tarayıcıda açın: http://localhost:8080/docs
+GET {{base}}/docs
