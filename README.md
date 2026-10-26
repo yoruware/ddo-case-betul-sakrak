@@ -27,3 +27,11 @@ Dosya adı, mezar taşında ve denetim kaydında kalır (kanıt amacıyla bilin�
 Saklama süresi, düğümün oluşturulma tarihinden başlar. Dosyaya sonradan eklenecek sürümler sayacı yeniden başlatmaz.
 Klasörler imha edilmez, yalnızca dosyalar.
 Zamanlanmış job tek bir uygulama örneği varsayar (çok örnekli çalışmada da güvenli ama iş tekrarlanır).
+
+“F-2 / F-3 / F-6 Bilinen Sınırlamalar”:
+
+Yeni sürüm, dosyayla aynı uzantıda olmak zorunda. Tür değiştirmek yeni dosya yüklemektir.
+Arama ad üzerinde ILIKE '%...%' kullanır (indekssiz). 100.000 düğümde çalışır ama tam metin araması yoktur (bonus kapsamında).
+Onay iş akışı tek aşamalı ve kurala bağlı değil: hangi belgenin onay gerektirdiğini sistem zorlamaz, onay sonucu dosya erişimini etkilemez.
+Onaylayan, dosyada okuma yetkisi sahibi olmak zorunda değil (rol bazlı karar). Belge içeriğini görmeden karar verebilir.
+Tek bir dosya için aynı anda yalnızca bir bekleyen talep olabilir.

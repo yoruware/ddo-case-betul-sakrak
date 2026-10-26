@@ -42,6 +42,7 @@ func NewRouter(d Deps) http.Handler {
 	archivist := role("archivist", "admin")
 	legalOnly := role("legal")
 	records := role("archivist", "auditor", "legal", "admin")
+	manager := role("unit_manager", "admin")
 	certs := role("archivist", "auditor", "admin")
 
 	mux.HandleFunc("GET /health", d.health)
@@ -79,6 +80,18 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("POST /api/retention/run", archivist(d.runRetention))
 	mux.Handle("GET /api/destruction-certificates", certs(d.listCertificates))
 	mux.Handle("GET /api/destruction-certificates/{id}", certs(d.getCertificate))
+	mux.Handle("POST /api/files/{id}/versions", user(d.uploadVersion))
+	mux.Handle("GET /api/files/{id}/versions", user(d.listVersions))
+	mux.Handle("POST /api/files/{id}/versions/{no}/restore", user(d.restoreVersion))
+
+	mux.Handle("POST /api/nodes/{id}/tags", user(d.addTag))
+	mux.Handle("GET /api/nodes/{id}/tags", user(d.listTags))
+	mux.Handle("DELETE /api/nodes/{id}/tags/{tag}", user(d.removeTag))
+	mux.Handle("GET /api/search", user(d.searchNodes))
+
+	mux.Handle("POST /api/files/{id}/approval-requests", user(d.createApproval))
+	mux.Handle("GET /api/approval-requests", user(d.listApprovals))
+	mux.Handle("POST /api/approval-requests/{id}/decide", manager(d.decideApproval))
 
 	mux.Handle("POST /api/groups", admin(d.createGroup))
 	mux.Handle("POST /api/groups/{id}/members", admin(d.addMember))

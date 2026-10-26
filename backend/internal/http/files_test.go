@@ -26,22 +26,21 @@ import (
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/download"
 	httpapi "github.com/yoruware/ddo-case-betul-sakrak/backend/internal/http"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/permissions"
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/retention"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/storage"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/testutil"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/upload"
-	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/retention"
 )
 
 type env struct {
-	t          *testing.T
-	srv        *httptest.Server
-	pool       *pgxpool.Pool
-	signer     *download.Signer
-	storeDir   string
-	admin, emp string
-	adminID    string
-	empID      string
-	archivist, legal string
+	t                                     *testing.T
+	srv                                   *httptest.Server
+	pool                                  *pgxpool.Pool
+	signer                                *download.Signer
+	storeDir                              string
+	admin, emp, archivist, legal, manager string
+	adminID                               string
+	empID                                 string
 }
 
 func newEnv(t *testing.T) *env {
@@ -85,6 +84,7 @@ func newEnv(t *testing.T) *env {
 	e.empID, e.emp = mk("emp@test", "employee")
 	_, e.archivist = mk("arsiv@test", "archivist")
 	_, e.legal = mk("hukuk@test", "legal")
+	_, e.manager = mk("mudur@test", "unit_manager")
 	return e
 }
 

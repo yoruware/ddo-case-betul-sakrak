@@ -443,8 +443,8 @@ WHERE node_id = $1::uuid ORDER BY version_no DESC LIMIT 1`, link.NodeID).Scan(&n
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"name": name, "size_bytes": size, "mime_type": mimeType,
-		"requires_password": link.PasswordHash != nil,
-		"expires_at":        link.ExpiresAt.UTC(),
+		"requires_password":   link.PasswordHash != nil,
+		"expires_at":          link.ExpiresAt.UTC(),
 		"remaining_downloads": remaining,
 	})
 }

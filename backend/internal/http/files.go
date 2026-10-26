@@ -19,8 +19,8 @@ import (
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/audit"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/download"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/permissions"
-	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/upload"
 	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/retention"
+	"github.com/yoruware/ddo-case-betul-sakrak/backend/internal/upload"
 )
 
 const insertVersionSQL = `
@@ -38,6 +38,117 @@ func writeBodyError(w http.ResponseWriter, err error) {
 		return
 	}
 	WriteError(w, http.StatusBadRequest, "invalid_request", "İstek gövdesi okunamadı")
+}
+
+type received struct {
+	name, sha, mimeType, tmpPath string
+	size                         int64
+}
+
+// receiveFile: multipart gövdesindeki "file" alanını geçici dosyaya alır ve doğrular
+// (ad, boyut, zararlı imza, magic byte/MIME, arşiv güvenliği). Zararlı içerik karantinaya alınır.
+// wantExt doluysa dosya uzantısı onunla aynı olmalıdır. ok=false ise yanıt yazılmıştır.
+// Başarıda dönen cleanup fonksiyonu (defer ile) çağrılmalıdır.
+func (d Deps) receiveFile(w http.ResponseWriter, r *http.Request, parentID, userID, wantExt string) (*received, func(), bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, d.Limits.MaxFileBytes+(1<<20))
+	mr, err := r.MultipartReader()
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "multipart/form-data gerekli")
+		return nil, nil, false
+	}
+	var part *multipart.Part
+	for {
+		part, err = mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "'file' alanı gerekli")
+			return nil, nil, false
+		}
+		if err != nil {
+			writeBodyError(w, err)
+			return nil, nil, false
+		}
+		if part.FormName() == "file" {
+			break
+		}
+	}
+
+	name := part.FileName()
+	ext, rej := upload.ValidateName(name)
+	if rej != nil {
+		writeReject(w, rej)
+		return nil, nil, false
+	}
+	if wantExt != "" && ext != wantExt {
+		WriteError(w, http.StatusUnsupportedMediaType, "extension_mismatch",
+			"Yeni sürümün uzantısı mevcut dosyayla aynı olmalı")
+		return nil, nil, false
+	}
+
+	tmp, err := d.Store.NewTemp()
+	if err != nil {
+		internalError(w, "geçici dosya oluşturulamadı", err)
+		return nil, nil, false
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath) // taşındıysa zaten yok
+	}
+
+	hasher := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(part, d.Limits.MaxFileBytes+1))
+	if err != nil {
+		cleanup()
+		writeBodyError(w, err)
+		return nil, nil, false
+	}
+	if n > d.Limits.MaxFileBytes {
+		cleanup()
+		WriteError(w, http.StatusRequestEntityTooLarge, "file_too_large",
+			fmt.Sprintf("Dosya boyut sınırını aşıyor (en fazla %d bayt)", d.Limits.MaxFileBytes))
+		return nil, nil, false
+	}
+	if n == 0 {
+		cleanup()
+		WriteError(w, http.StatusBadRequest, "invalid_request", "Boş dosya yüklenemez")
+		return nil, nil, false
+	}
+	sha := hex.EncodeToString(hasher.Sum(nil))
+
+	head := make([]byte, 8192)
+	m, _ := tmp.ReadAt(head, 0)
+	head = head[:m]
+
+	// 1) Zararlı imza her şeyden önce gelir: karantina.
+	sig, _, serr := upload.Scan(io.NewSectionReader(tmp, 0, n))
+	if serr != nil {
+		cleanup()
+		internalError(w, "tarama başarısız", serr)
+		return nil, nil, false
+	}
+	if sig != "" {
+		d.quarantine(w, r, tmp, tmpPath, name, sha, n, parentID, userID, "Dosya zararlı içerik imzası taşıyor: "+sig)
+		cleanup()
+		return nil, nil, false
+	}
+
+	// 2) Uzantı / magic byte / MIME, 3) arşiv güvenliği.
+	mimeType, rej := upload.CheckContent(ext, head)
+	if rej == nil && upload.IsArchive(ext) {
+		rej = upload.CheckZip(tmp, n, d.Limits, upload.IsOOXML(ext))
+	}
+	if rej != nil {
+		if rej.Code == upload.CodeMalware {
+			d.quarantine(w, r, tmp, tmpPath, name, sha, n, parentID, userID, rej.Message)
+		} else {
+			writeReject(w, rej)
+		}
+		cleanup()
+		return nil, nil, false
+	}
+	_ = tmp.Close()
+	return &received{name: name, sha: sha, mimeType: mimeType, tmpPath: tmpPath, size: n},
+		func() { _ = os.Remove(tmpPath) }, true
 }
 
 // POST /api/nodes/{id}/files  (multipart/form-data, alan adı: file)
@@ -63,94 +174,12 @@ func (d Deps) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, d.Limits.MaxFileBytes+(1<<20))
-	mr, err := r.MultipartReader()
-	if err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "multipart/form-data gerekli")
+	rec, cleanup, ok := d.receiveFile(w, r, parentID, p.UserID, "")
+	if !ok {
 		return
 	}
-	var part *multipart.Part
-	for {
-		part, err = mr.NextPart()
-		if errors.Is(err, io.EOF) {
-			WriteError(w, http.StatusBadRequest, "invalid_request", "'file' alanı gerekli")
-			return
-		}
-		if err != nil {
-			writeBodyError(w, err)
-			return
-		}
-		if part.FormName() == "file" {
-			break
-		}
-	}
-
-	name := part.FileName()
-	ext, rej := upload.ValidateName(name)
-	if rej != nil {
-		writeReject(w, rej)
-		return
-	}
-
-	tmp, err := d.Store.NewTemp()
-	if err != nil {
-		internalError(w, "geçici dosya oluşturulamadı", err)
-		return
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath) // taşındıysa zaten yok
-	}()
-
-	hasher := sha256.New()
-	n, err := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(part, d.Limits.MaxFileBytes+1))
-	if err != nil {
-		writeBodyError(w, err)
-		return
-	}
-	if n > d.Limits.MaxFileBytes {
-		WriteError(w, http.StatusRequestEntityTooLarge, "file_too_large",
-			fmt.Sprintf("Dosya boyut sınırını aşıyor (en fazla %d bayt)", d.Limits.MaxFileBytes))
-		return
-	}
-	if n == 0 {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "Boş dosya yüklenemez")
-		return
-	}
-	sha := hex.EncodeToString(hasher.Sum(nil))
-
-	head := make([]byte, 8192)
-	m, _ := tmp.ReadAt(head, 0)
-	head = head[:m]
-
-	// 1) Zararlı imza her şeyden önce gelir: karantina.
-	sig, _, serr := upload.Scan(io.NewSectionReader(tmp, 0, n))
-	if serr != nil {
-		internalError(w, "tarama başarısız", serr)
-		return
-	}
-	if sig != "" {
-		d.quarantine(w, r, tmp, tmpPath, name, sha, n, parentID, p.UserID, "Dosya zararlı içerik imzası taşıyor: "+sig)
-		return
-	}
-
-	// 2) Uzantı / magic byte / MIME, 3) arşiv güvenliği.
-	mimeType, rej := upload.CheckContent(ext, head)
-	if rej == nil && upload.IsArchive(ext) {
-		rej = upload.CheckZip(tmp, n, d.Limits, upload.IsOOXML(ext))
-	}
-	if rej != nil {
-		if rej.Code == upload.CodeMalware {
-			d.quarantine(w, r, tmp, tmpPath, name, sha, n, parentID, p.UserID, rej.Message)
-			return
-		}
-		writeReject(w, rej)
-		return
-	}
-
-	_ = tmp.Close()
-	existed := d.Store.Exists(sha)
+	defer cleanup()
+	existed := d.Store.Exists(rec.sha)
 
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
@@ -158,17 +187,18 @@ func (d Deps) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
 	// Yükleme paylaşımlı, imha özel kilit alır: blob silinirken aynı içerik yeniden bağlanamaz.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, retention.LockKey); err != nil {
 		internalError(w, "kilit alınamadı", err)
 		return
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO blobs (sha256, size_bytes) VALUES ($1, $2) ON CONFLICT (sha256) DO NOTHING`, sha, n); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO blobs (sha256, size_bytes) VALUES ($1, $2) ON CONFLICT (sha256) DO NOTHING`, rec.sha, rec.size); err != nil {
 		internalError(w, "blob kaydı yazılamadı", err)
 		return
 	}
 	var node nodeResp
-	err = tx.QueryRow(ctx, insertNodeSQL, parentID, "file", name, p.UserID).
+	err = tx.QueryRow(ctx, insertNodeSQL, parentID, "file", rec.name, p.UserID).
 		Scan(&node.ID, &node.ParentID, &node.Kind, &node.Name, &node.OwnerID, &node.CreatedAt)
 	if err != nil {
 		if pgCode(err) == "23505" {
@@ -182,14 +212,14 @@ func (d Deps) uploadFile(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "oluşturan yetkisi yazılamadı", err)
 		return
 	}
-	if _, err := tx.Exec(ctx, insertVersionSQL, node.ID, sha, n, mimeType, name, p.UserID); err != nil {
+	if _, err := tx.Exec(ctx, insertVersionSQL, node.ID, rec.sha, rec.size, rec.mimeType, rec.name, p.UserID); err != nil {
 		internalError(w, "sürüm kaydı yazılamadı", err)
 		return
 	}
 	err = d.Audit.AppendTx(ctx, tx, audit.Entry{
 		ActorID: p.UserID, Action: "file.upload", TargetType: "node", TargetID: node.ID,
 		New: map[string]any{
-			"sha256": sha, "size_bytes": n, "mime_type": mimeType, "name": name,
+			"sha256": rec.sha, "size_bytes": rec.size, "mime_type": rec.mimeType, "name": rec.name,
 			"parent_id": parentID, "deduplicated": existed,
 		},
 	})
@@ -198,7 +228,7 @@ func (d Deps) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Dosya en son taşınır: veritabanı satırı olup içeriği olmayan durum oluşmaz.
-	if _, err := d.Store.Commit(tmpPath, sha); err != nil {
+	if _, err := d.Store.Commit(rec.tmpPath, rec.sha); err != nil {
 		internalError(w, "içerik saklanamadı", err)
 		return
 	}
@@ -207,8 +237,8 @@ func (d Deps) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusCreated, map[string]any{
-		"node": node, "version_no": 1, "sha256": sha, "size_bytes": n,
-		"mime_type": mimeType, "deduplicated": existed,
+		"node": node, "version_no": 1, "sha256": rec.sha, "size_bytes": rec.size,
+		"mime_type": rec.mimeType, "deduplicated": existed,
 	})
 }
 
@@ -280,7 +310,7 @@ func (d Deps) downloadLink(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"url": link, "expires_at": time.Unix(exp, 0).UTC()})
 }
 
-// GET /api/download/{id}?uid=&exp=&sig=  (Authorization başlığı gerekmez, imza kimliği taşır)
+// GET /api/download/{id}?uid=&exp=&sig=[&version=N]  (Authorization başlığı gerekmez, imza kimliği taşır)
 func (d Deps) downloadFile(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
 	q := r.URL.Query()
@@ -289,6 +319,15 @@ func (d Deps) downloadFile(w http.ResponseWriter, r *http.Request) {
 	if !isUUID(nodeID) || !isUUID(uid) || perr != nil || sig == "" {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "Geçersiz indirme bağlantısı")
 		return
+	}
+	version := 0 // 0 = son sürüm
+	if v := q.Get("version"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "version geçersiz")
+			return
+		}
+		version = n
 	}
 	if err := d.Signer.Verify(nodeID, uid, exp, sig, time.Now()); err != nil {
 		if errors.Is(err, download.ErrExpired) {
@@ -317,11 +356,13 @@ func (d Deps) downloadFile(w http.ResponseWriter, r *http.Request) {
 
 	var sha, mimeType, name string
 	var size int64
+	var versionNo int
 	err = d.Pool.QueryRow(ctx, `
-SELECT sha256, mime_type, original_name, size_bytes FROM file_versions
-WHERE node_id = $1::uuid ORDER BY version_no DESC LIMIT 1`, nodeID).Scan(&sha, &mimeType, &name, &size)
+SELECT sha256, mime_type, original_name, size_bytes, version_no FROM file_versions
+WHERE node_id = $1::uuid AND ($2::int = 0 OR version_no = $2::int)
+ORDER BY version_no DESC LIMIT 1`, nodeID, version).Scan(&sha, &mimeType, &name, &size, &versionNo)
 	if errors.Is(err, pgx.ErrNoRows) {
-		WriteError(w, http.StatusNotFound, "not_found", "Dosya bulunamadı")
+		WriteError(w, http.StatusNotFound, "not_found", "Dosya veya sürüm bulunamadı")
 		return
 	}
 	if err != nil {
@@ -338,7 +379,7 @@ WHERE node_id = $1::uuid ORDER BY version_no DESC LIMIT 1`, nodeID).Scan(&sha, &
 	// Denetim kaydı yazılamazsa indirme yapılmaz (fail closed).
 	err = d.Audit.Append(ctx, audit.Entry{
 		ActorID: uid, Action: "file.download", TargetType: "node", TargetID: nodeID,
-		New: map[string]any{"sha256": sha, "size_bytes": size, "name": name},
+		New: map[string]any{"sha256": sha, "size_bytes": size, "name": name, "version_no": versionNo},
 	})
 	if err != nil {
 		internalError(w, "denetim kaydı yazılamadı", err)

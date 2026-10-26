@@ -99,3 +99,20 @@ kapatılır, tutanak hash'i denetim zincirine yazılır. Yükleme, bekletme ve i
 zincirde olduğu için sonradan düzeltilemez. (−) Mezar taşı adı saklar; aynı klasörde aynı ad
 yeniden kullanılamaz. (−) Global kilit, imha ve bekletme işlemlerini sıraya dizer; hacim büyürse
 düğüm başına kilide geçilmeli. (−) Saklama kaydı bir kez atanır; hatalı atama yalnızca veritabanından düzeltilir.
+
+## ADR-006: Eklemeli sürümleme ve görev ayrılığı zorunlu onay akışı
+
+**Bağlam.** Dosya sürümleri geri alınabilmeli ama geçmiş silinmemeli. Onay akışında talep sahibi kendi
+talebini onaylayamamalı ve eşzamanlı kararlar çakışmamalı.
+
+**Seçenekler.** Geri dönüş: (a) eski sürümü "güncel" işaretlemek, (b) eski içeriği yeni sürüm olarak eklemek.
+Görev ayrılığı: (1) yalnızca uygulama kodunda, (2) uygulama + veritabanı kısıtı. Karar çakışması:
+(i) oku-kontrol et-yaz, (ii) koşullu tek UPDATE.
+
+**Karar.** (b), (2), (ii). Sürümler yalnızca eklenir, geri dönüş yeni sürüm üretir; numara, dosya satırı
+`FOR UPDATE` ile kilitlenerek verilir. Onay kararı `WHERE status='pending' AND requested_by <> karar_veren`
+koşullu UPDATE'idir; ayrıca tabloda `CHECK (decided_by <> requested_by)` bulunur.
+
+**Sonuç.** (+) Geri dönüş denetlenebilir ve kendisi de geri alınabilir; eşzamanlı 10 karardan yalnızca biri
+kazanır (testle kanıtlı). (+) Uygulama hatası olsa bile veritabanı kendi onayını reddeder. (−) Her geri dönüş
+yeni sürüm satırı ekler. (−) Onay akışı şimdilik bilgi amaçlıdır: onay, dosya erişimini veya imhayı kısıtlamaz.
