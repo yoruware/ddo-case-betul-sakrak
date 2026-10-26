@@ -104,7 +104,11 @@ func (e *env) do(method, path, token string, body io.Reader, ctype string) (*htt
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			e.t.Errorf("response body kapatılamadı: %v", err)
+		}
+	}()
 	b, _ := io.ReadAll(resp.Body)
 	return resp, b
 }

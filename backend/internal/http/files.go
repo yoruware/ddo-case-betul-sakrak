@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -374,7 +375,11 @@ ORDER BY version_no DESC LIMIT 1`, nodeID, version).Scan(&sha, &mimeType, &name,
 		internalError(w, "içerik açılamadı", err)
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Error("indirilen dosya kapatılamadı", "err", err)
+		}
+	}()
 
 	// Denetim kaydı yazılamazsa indirme yapılmaz (fail closed).
 	err = d.Audit.Append(ctx, audit.Entry{

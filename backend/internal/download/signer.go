@@ -25,7 +25,7 @@ func NewSigner(key string, ttl time.Duration) *Signer {
 
 func (s *Signer) mac(nodeID, userID string, exp int64) []byte {
 	m := hmac.New(sha256.New, s.key)
-	fmt.Fprintf(m, "dl\n%s\n%s\n%d", nodeID, userID, exp)
+	_, _ = fmt.Fprintf(m, "dl\n%s\n%s\n%d", nodeID, userID, exp)
 	return m.Sum(nil)
 }
 

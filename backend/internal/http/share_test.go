@@ -111,7 +111,11 @@ func TestPaylasimBaglantilari(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				defer resp.Body.Close()
+				defer func() {
+					if err := resp.Body.Close(); err != nil {
+						t.Errorf("response body kapatılamadı: %v", err)
+					}
+				}()
 				_, _ = io.Copy(io.Discard, resp.Body)
 				switch resp.StatusCode {
 				case 200:

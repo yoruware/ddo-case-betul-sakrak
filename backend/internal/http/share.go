@@ -527,7 +527,11 @@ WHERE node_id = $1::uuid ORDER BY version_no DESC LIMIT 1`, link.NodeID).Scan(&s
 		internalError(w, "içerik açılamadı", err)
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Error("paylaşılan dosya kapatılamadı", "err", err)
+		}
+	}()
 
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
