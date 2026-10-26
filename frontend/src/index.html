@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KasaDoc</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#1c2024; --muted:#667085; --brand:#1f5eff; --err:#c0262d; --ok:#14804a; --line:#e3e6ea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171a; --card:#1d2125; --text:#e8eaed; --muted:#9aa3ad; --brand:#6b95ff; --err:#ff7b80; --ok:#4cc38a; --line:#2d333a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:480px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:1.5rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:12px 0 4px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:1rem; }
+  button { padding:10px 16px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:1rem; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--brand); border:1px solid var(--brand); }
+  button:disabled { opacity:.6; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+  .err { color:var(--err); margin-top:12px; }
+  .ok { color:var(--ok); }
+  .muted { color:var(--muted); font-size:.9rem; }
+  dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:6px 12px; }
+  dt { color:var(--muted); }
+  dd { margin:0; word-break:break-all; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:99px; background:var(--brand); color:#fff; font-size:.85rem; }
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+<main>
+  <h1>KasaDoc</h1>
+  <p class="sub">Kurumsal doküman yönetimi ve güvenli arşiv</p>
+
+  <!-- Yükleniyor -->
+  <div class="card" x-show="booting"><p class="muted">Yükleniyor...</p></div>
+
+  <!-- Giriş ekranı -->
+  <div class="card" x-show="!booting && !user" x-cloak>
+    <p class="muted">
+      Sunucu:
+      <span x-show="health === 'ok'" class="ok">çalışıyor</span>
+      <span x-show="health === 'down'" class="err">erişilemiyor</span>
+      <span x-show="health === 'checking'">kontrol ediliyor...</span>
+    </p>
+    <label for="email">E-posta</label>
+    <input id="email" type="email" x-model="form.email" autocomplete="username"
+           @keydown.enter="login()">
+    <label for="pw">Parola</label>
+    <input id="pw" type="password" x-model="form.password" autocomplete="current-password"
+           @keydown.enter="login()">
+    <p class="err" x-show="error" x-text="error"></p>
+    <div class="row">
+      <button @click="login()" :disabled="loading" x-text="loading ? 'Giriş yapılıyor...' : 'Giriş yap'"></button>
+    </div>
+    <p class="muted" style="margin-top:16px">Demo: calisan@kasadoc.local / Demo1234!</p>
+  </div>
+
+  <!-- Giriş yapılmış ekran -->
+  <div x-show="!booting && user" x-cloak>
+    <div class="card">
+      <h2 style="margin-top:0" x-text="'Merhaba, ' + (user && user.full_name)"></h2>
+      <dl>
+        <dt>E-posta</dt><dd x-text="user && user.email"></dd>
+        <dt>Rol</dt><dd><span class="badge" x-text="user && roleLabel(user.role)"></span></dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Yetki denemesi</h3>
+      <p class="muted">Bu uç yalnızca sistem yöneticisine açık. Başka bir rolle 403 görmelisin.</p>
+      <div class="row">
+        <button class="ghost" @click="pingAdmin()" :disabled="pinging">Admin ucunu çağır</button>
+      </div>
+      <p x-show="ping.text" :class="ping.ok ? 'ok' : 'err'" style="margin-top:12px" x-text="ping.text"></p>
+    </div>
+
+    <div class="row"><button class="ghost" @click="logout()">Çıkış yap</button></div>
+  </div>
+</main>
+
+<script>
+const API = 'http://localhost:8080';
+const ROLES = {
+  employee: 'Çalışan', unit_manager: 'Birim yöneticisi', archivist: 'Arşiv sorumlusu',
+  legal: 'Hukuk / uyum', auditor: 'Denetçi', admin: 'Sistem yöneticisi'
+};
+
+function app() {
+  return {
+    booting: true, loading: false, pinging: false,
+    health: 'checking', error: '',
+    form: { email: '', password: '' },
+    token: null, user: null,
+    ping: { ok: false, text: '' },
+
+    roleLabel(r) { return ROLES[r] || r; },
+
+    async init() {
+      try { this.token = localStorage.getItem('kd_token'); } catch (e) { this.token = null; }
+      try {
+        const r = await fetch(API + '/health');
+        this.health = r.ok ? 'ok' : 'down';
+      } catch (e) { this.health = 'down'; }
+      if (this.token) await this.loadMe();
+      this.booting = false;
+    },
+
+    async loadMe() {
+      try {
+        const r = await fetch(API + '/api/me', { headers: { Authorization: 'Bearer ' + this.token } });
+        if (r.status === 401) { this.logout(); return; }
+        this.user = await r.json();
+      } catch (e) {
+        this.error = 'Sunucuya ulaşılamadı';
+      }
+    },
+
+    async login() {
+      this.error = '';
+      if (!this.form.email || !this.form.password) { this.error = 'E-posta ve parola gerekli'; return; }
+      this.loading = true;
+      try {
+        const r = await fetch(API + '/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.form)
+        });
+        const data = await r.json();
+        if (!r.ok) { this.error = (data.error && data.error.message) || 'Giriş başarısız'; return; }
+        this.token = data.access_token;
+        try { localStorage.setItem('kd_token', this.token); } catch (e) {}
+        this.form.password = '';
+        await this.loadMe();
+      } catch (e) {
+        this.error = 'Sunucuya ulaşılamadı';
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async pingAdmin() {
+      this.pinging = true; this.ping = { ok: false, text: '' };
+      try {
+        const r = await fetch(API + '/api/admin/ping', { headers: { Authorization: 'Bearer ' + this.token } });
+        const data = await r.json();
+        this.ping = r.ok
+          ? { ok: true, text: r.status + ' – izin verildi (' + data.message + ')' }
+          : { ok: false, text: r.status + ' – ' + ((data.error && data.error.message) || 'reddedildi') };
+      } catch (e) {
+        this.ping = { ok: false, text: 'Sunucuya ulaşılamadı' };
+      } finally {
+        this.pinging = false;
+      }
+    },
+
+    logout() {
+      this.user = null; this.token = null; this.ping = { ok: false, text: '' };
+      try { localStorage.removeItem('kd_token'); } catch (e) {}
+    }
+  };
+}
+</script>
+</body>
+</html>
