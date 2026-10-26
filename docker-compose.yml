@@ -48,9 +48,26 @@ services:
     env_file: .env
     environment:
       API_URL: http://backend:8080
+    volumes:
+      - filedata:/data/storage
     depends_on:
       backend:
         condition: service_healthy
+
+  verify:
+    build: ./verify
+    profiles: ["verify"]
+    env_file: .env
+    environment:
+      API_URL: http://backend:8080
+      STORAGE_DIR: /data/storage
+    volumes:
+      - filedata:/data/storage:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      simulator:
+        condition: service_started
 
 volumes:
   pgdata:
